@@ -12,4 +12,4 @@ run: ww.exe
 	./ww.exe
 
 fmt:
-	clang-format -i **/*.cpp **/*.hpp
+	clang-format -i main.cpp

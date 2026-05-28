@@ -2,12 +2,12 @@
 #define _WIN32_WINNT 0x0A00
 #define NTDDI_VERSION 0x0A000007  // Windows 10 1709+
 
-#include <windows.h>
+#include <dwmapi.h>
+#include <ole2.h>      // StringFromCLSID
+#include <shobjidl.h>  // IVirtualDesktopManager
 #include <stdio.h>
 #include <string.h>
-#include <dwmapi.h>
-#include <shobjidl.h>   // IVirtualDesktopManager
-#include <ole2.h>       // StringFromCLSID
+#include <windows.h>
 
 // ---- 宽字符转 UTF-8 ----
 int WideToUtf8(const wchar_t* src, char* dst, int dstSize) {
@@ -36,16 +36,13 @@ BOOL InitVirtualDesktopManager() {
         return FALSE;
     }
 
-    hr = CoCreateInstance(
-        CLSID_VirtualDesktopManager,
-        NULL,
-        CLSCTX_INPROC_SERVER,
-        IID_IVirtualDesktopManager,
-        (void**)&g_pDesktopManager
-    );
+    hr = CoCreateInstance(CLSID_VirtualDesktopManager, NULL,
+                          CLSCTX_INPROC_SERVER, IID_IVirtualDesktopManager,
+                          (void**)&g_pDesktopManager);
 
     if (FAILED(hr) || !g_pDesktopManager) {
-        printf("VirtualDesktopManager 创建失败 (需要 Windows 10+): 0x%08lX\n", hr);
+        printf("VirtualDesktopManager 创建失败 (需要 Windows 10+): 0x%08lX\n",
+               hr);
         return FALSE;
     }
     return TRUE;
@@ -72,9 +69,10 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
         // 排除不在虚拟桌面上的窗口（桌面 GUID 为零或获取不到）
         if (g_pDesktopManager) {
             GUID desktopId;
-            if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId))
-                || IsEqualGUID(desktopId, GUID_NULL)) {
-                return TRUE; // 跳过该窗口，继续枚举
+            if (FAILED(
+                    g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId)) ||
+                IsEqualGUID(desktopId, GUID_NULL)) {
+                return TRUE;  // 跳过该窗口，继续枚举
             }
         }
 
@@ -93,12 +91,14 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
         if (g_pDesktopManager) {
             // 是否在当前桌面
             BOOL onCurrent = FALSE;
-            g_pDesktopManager->IsWindowOnCurrentVirtualDesktop(hwnd, &onCurrent);
+            g_pDesktopManager->IsWindowOnCurrentVirtualDesktop(hwnd,
+                                                               &onCurrent);
             printf("在当前虚拟桌面: %s\n", onCurrent ? "是" : "否");
 
             // 窗口所在桌面 GUID
             GUID windowDesktopId;
-            if (SUCCEEDED(g_pDesktopManager->GetWindowDesktopId(hwnd, &windowDesktopId))) {
+            if (SUCCEEDED(g_pDesktopManager->GetWindowDesktopId(
+                    hwnd, &windowDesktopId))) {
                 char guidStr[128];
                 GuidToString(windowDesktopId, guidStr, sizeof(guidStr));
                 printf("所在桌面: %s\n", guidStr);
@@ -108,7 +108,8 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
 
             // 当前桌面 GUID
             GUID currentDesktopId;
-            if (SUCCEEDED(g_pDesktopManager->GetWindowDesktopId(NULL, &currentDesktopId))) {
+            if (SUCCEEDED(g_pDesktopManager->GetWindowDesktopId(
+                    NULL, &currentDesktopId))) {
                 char guidStr[128];
                 GuidToString(currentDesktopId, guidStr, sizeof(guidStr));
                 printf("当前桌面: %s\n", guidStr);
@@ -138,42 +139,15 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
         int height = rect.bottom - rect.top;
 
         printf("--- 位置和大小 ---\n");
-        printf("位置: (%d, %d) - (%d, %d)\n", rect.left, rect.top, rect.right, rect.bottom);
+        printf("位置: (%d, %d) - (%d, %d)\n", rect.left, rect.top, rect.right,
+               rect.bottom);
         printf("大小: %d x %d\n", width, height);
 
         // 客户区大小
         RECT clientRect;
         GetClientRect(hwnd, &clientRect);
-        printf("客户区大小: %d x %d\n",
-               clientRect.right - clientRect.left,
+        printf("客户区大小: %d x %d\n", clientRect.right - clientRect.left,
                clientRect.bottom - clientRect.top);
-
-
-        // 父窗口和所有者窗口
-        HWND parent = GetParent(hwnd);
-        HWND owner = GetWindow(hwnd, GW_OWNER);
-
-        printf("--- 窗口关系 ---\n");
-        if (parent) {
-            wchar_t parentTitle[256];
-            GetWindowTextW(parent, parentTitle, 256);
-            char parentUtf8[512];
-            WideToUtf8(parentTitle, parentUtf8, 512);
-            printf("父窗口: 0x%p (%s)\n", parent, parentUtf8);
-        } else {
-            printf("父窗口: 无\n");
-        }
-
-        if (owner) {
-            wchar_t ownerTitle[256];
-            GetWindowTextW(owner, ownerTitle, 256);
-            char ownerUtf8[512];
-            WideToUtf8(ownerTitle, ownerUtf8, 512);
-            printf("所有者窗口: 0x%p (%s)\n", owner, ownerUtf8);
-        } else {
-            printf("所有者窗口: 无\n");
-        }
-
     }
 
     return TRUE;
