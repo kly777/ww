@@ -1,0 +1,240 @@
+#define WINVER 0x0A00
+#define _WIN32_WINNT 0x0A00
+#define NTDDI_VERSION 0x0A000007  // Windows 10 1709+
+
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+#include <dwmapi.h>
+#include <shobjidl.h>   // IVirtualDesktopManager
+#include <ole2.h>       // StringFromCLSID
+
+// ---- 宽字符转 UTF-8 ----
+int WideToUtf8(const wchar_t* src, char* dst, int dstSize) {
+    return WideCharToMultiByte(CP_UTF8, 0, src, -1, dst, dstSize, NULL, NULL);
+}
+
+// ---- GUID 转字符串 ----
+void GuidToString(const GUID& guid, char* out, int outSize) {
+    wchar_t* wstr = NULL;
+    if (SUCCEEDED(StringFromCLSID(guid, &wstr)) && wstr) {
+        WideToUtf8(wstr, out, outSize);
+        CoTaskMemFree(wstr);
+    } else {
+        snprintf(out, outSize, "未知");
+    }
+}
+
+// ---- COM 全局对象 ----
+static IVirtualDesktopManager* g_pDesktopManager = NULL;
+
+// ---- 初始化 ----
+BOOL InitVirtualDesktopManager() {
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (FAILED(hr)) {
+        printf("COM 初始化失败: 0x%08lX\n", hr);
+        return FALSE;
+    }
+
+    hr = CoCreateInstance(
+        CLSID_VirtualDesktopManager,
+        NULL,
+        CLSCTX_INPROC_SERVER,
+        IID_IVirtualDesktopManager,
+        (void**)&g_pDesktopManager
+    );
+
+    if (FAILED(hr) || !g_pDesktopManager) {
+        printf("VirtualDesktopManager 创建失败 (需要 Windows 10+): 0x%08lX\n", hr);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// ---- 清理 ----
+void CleanupVirtualDesktopManager() {
+    if (g_pDesktopManager) {
+        g_pDesktopManager->Release();
+        g_pDesktopManager = NULL;
+    }
+    CoUninitialize();
+}
+
+// ---- 窗口枚举回调 ----
+BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
+    wchar_t windowTitle[256];
+    wchar_t className[256];
+
+    GetWindowTextW(hwnd, windowTitle, 256);
+    GetClassNameW(hwnd, className, 256);
+
+    if (IsWindowVisible(hwnd) && wcslen(windowTitle) > 0) {
+        char titleUtf8[512];
+        char classUtf8[512];
+        WideToUtf8(windowTitle, titleUtf8, 512);
+        WideToUtf8(className, classUtf8, 512);
+
+        printf("==================== 窗口详细信息 ====================\n");
+        printf("窗口句柄: 0x%p\n", hwnd);
+        printf("窗口标题: %s\n", titleUtf8);
+        printf("窗口类名: %s\n", classUtf8);
+
+        // ---- 虚拟桌面信息 ----
+        printf("--- 虚拟桌面 ---\n");
+        if (g_pDesktopManager) {
+            // 是否在当前桌面
+            BOOL onCurrent = FALSE;
+            g_pDesktopManager->IsWindowOnCurrentVirtualDesktop(hwnd, &onCurrent);
+            printf("在当前虚拟桌面: %s\n", onCurrent ? "是" : "否");
+
+            // 窗口所在桌面 GUID
+            GUID windowDesktopId;
+            if (SUCCEEDED(g_pDesktopManager->GetWindowDesktopId(hwnd, &windowDesktopId))) {
+                char guidStr[128];
+                GuidToString(windowDesktopId, guidStr, sizeof(guidStr));
+                printf("所在桌面: %s\n", guidStr);
+            } else {
+                printf("所在桌面: 获取失败\n");
+            }
+
+            // 当前桌面 GUID
+            GUID currentDesktopId;
+            if (SUCCEEDED(g_pDesktopManager->GetWindowDesktopId(NULL, &currentDesktopId))) {
+                char guidStr[128];
+                GuidToString(currentDesktopId, guidStr, sizeof(guidStr));
+                printf("当前桌面: %s\n", guidStr);
+            }
+        } else {
+            printf("虚拟桌面API不可用\n");
+        }
+
+        // 窗口状态
+        BOOL isVisible = IsWindowVisible(hwnd);
+        BOOL isEnabled = IsWindowEnabled(hwnd);
+        BOOL isIconic = IsIconic(hwnd);
+        BOOL isZoomed = IsZoomed(hwnd);
+        BOOL isActive = (GetForegroundWindow() == hwnd);
+
+        printf("--- 窗口状态 ---\n");
+        printf("可见: %s\n", isVisible ? "是" : "否");
+        printf("可用: %s\n", isEnabled ? "是" : "否");
+        printf("最小化: %s\n", isIconic ? "是" : "否");
+        printf("最大化: %s\n", isZoomed ? "是" : "否");
+        printf("前台窗口: %s\n", isActive ? "是" : "否");
+
+        // 窗口位置和大小
+        RECT rect;
+        GetWindowRect(hwnd, &rect);
+        int width = rect.right - rect.left;
+        int height = rect.bottom - rect.top;
+
+        printf("--- 位置和大小 ---\n");
+        printf("位置: (%d, %d) - (%d, %d)\n", rect.left, rect.top, rect.right, rect.bottom);
+        printf("大小: %d x %d\n", width, height);
+
+        // 客户区大小
+        RECT clientRect;
+        GetClientRect(hwnd, &clientRect);
+        printf("客户区大小: %d x %d\n",
+               clientRect.right - clientRect.left,
+               clientRect.bottom - clientRect.top);
+
+        // 进程和线程信息
+        DWORD processId;
+        DWORD threadId = GetWindowThreadProcessId(hwnd, &processId);
+
+        printf("--- 进程信息 ---\n");
+        printf("进程ID: %lu\n", processId);
+        printf("线程ID: %lu\n", threadId);
+
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+                                     FALSE, processId);
+        if (hProcess) {
+            wchar_t processName[MAX_PATH];
+            DWORD size = MAX_PATH;
+            if (QueryFullProcessImageNameW(hProcess, 0, processName, &size)) {
+                wchar_t* fileName = wcsrchr(processName, L'\\');
+                if (fileName) fileName++;
+                else fileName = processName;
+
+                char processUtf8[512];
+                WideToUtf8(fileName, processUtf8, 512);
+                printf("进程名: %s\n", processUtf8);
+
+                WideToUtf8(processName, processUtf8, 512);
+                printf("完整路径: %s\n", processUtf8);
+            }
+            CloseHandle(hProcess);
+        }
+
+        // 窗口样式
+        LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+        LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        LONG_PTR userData = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+        printf("--- 窗口样式 ---\n");
+        printf("基本样式: 0x%08lX\n", style);
+        printf("扩展样式: 0x%08lX\n", exStyle);
+        printf("用户数据: 0x%p\n", (void*)userData);
+
+        // 父窗口和所有者窗口
+        HWND parent = GetParent(hwnd);
+        HWND owner = GetWindow(hwnd, GW_OWNER);
+
+        printf("--- 窗口关系 ---\n");
+        if (parent) {
+            wchar_t parentTitle[256];
+            GetWindowTextW(parent, parentTitle, 256);
+            char parentUtf8[512];
+            WideToUtf8(parentTitle, parentUtf8, 512);
+            printf("父窗口: 0x%p (%s)\n", parent, parentUtf8);
+        } else {
+            printf("父窗口: 无\n");
+        }
+
+        if (owner) {
+            wchar_t ownerTitle[256];
+            GetWindowTextW(owner, ownerTitle, 256);
+            char ownerUtf8[512];
+            WideToUtf8(ownerTitle, ownerUtf8, 512);
+            printf("所有者窗口: 0x%p (%s)\n", owner, ownerUtf8);
+        } else {
+            printf("所有者窗口: 无\n");
+        }
+
+        // 分层窗口信息
+        if (exStyle & WS_EX_LAYERED) {
+            BYTE alpha;
+            DWORD flags;
+            if (GetLayeredWindowAttributes(hwnd, NULL, &alpha, &flags)) {
+                printf("--- 分层窗口信息 ---\n");
+                printf("透明度: %d (0-255)\n", alpha);
+                printf("标志: 0x%08lX\n", flags);
+                if (flags & LWA_ALPHA) printf("  LWA_ALPHA\n");
+                if (flags & LWA_COLORKEY) printf("  LWA_COLORKEY\n");
+            }
+        }
+
+        printf("--- DPI信息 ---\n");
+        UINT dpi = GetDpiForWindow(hwnd);
+        printf("窗口DPI: %u\n", dpi);
+
+        printf("==================== 结束 ====================\n\n");
+    }
+
+    return TRUE;
+}
+
+int main() {
+    SetConsoleOutputCP(CP_UTF8);
+
+    if (!InitVirtualDesktopManager()) {
+        printf("无法初始化虚拟桌面API，继续枚举窗口...\n\n");
+    }
+
+    printf("开始枚举所有窗口...\n\n");
+    EnumWindows(EnumWindowCallback, 0);
+
+    CleanupVirtualDesktopManager();
+    return 0;
+}
