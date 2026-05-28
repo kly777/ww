@@ -139,43 +139,6 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
                clientRect.right - clientRect.left,
                clientRect.bottom - clientRect.top);
 
-        // 进程和线程信息
-        DWORD processId;
-        DWORD threadId = GetWindowThreadProcessId(hwnd, &processId);
-
-        printf("--- 进程信息 ---\n");
-        printf("进程ID: %lu\n", processId);
-        printf("线程ID: %lu\n", threadId);
-
-        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
-                                     FALSE, processId);
-        if (hProcess) {
-            wchar_t processName[MAX_PATH];
-            DWORD size = MAX_PATH;
-            if (QueryFullProcessImageNameW(hProcess, 0, processName, &size)) {
-                wchar_t* fileName = wcsrchr(processName, L'\\');
-                if (fileName) fileName++;
-                else fileName = processName;
-
-                char processUtf8[512];
-                WideToUtf8(fileName, processUtf8, 512);
-                printf("进程名: %s\n", processUtf8);
-
-                WideToUtf8(processName, processUtf8, 512);
-                printf("完整路径: %s\n", processUtf8);
-            }
-            CloseHandle(hProcess);
-        }
-
-        // 窗口样式
-        LONG style = GetWindowLongW(hwnd, GWL_STYLE);
-        LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        LONG_PTR userData = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-
-        printf("--- 窗口样式 ---\n");
-        printf("基本样式: 0x%08lX\n", style);
-        printf("扩展样式: 0x%08lX\n", exStyle);
-        printf("用户数据: 0x%p\n", (void*)userData);
 
         // 父窗口和所有者窗口
         HWND parent = GetParent(hwnd);
@@ -202,24 +165,6 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
             printf("所有者窗口: 无\n");
         }
 
-        // 分层窗口信息
-        if (exStyle & WS_EX_LAYERED) {
-            BYTE alpha;
-            DWORD flags;
-            if (GetLayeredWindowAttributes(hwnd, NULL, &alpha, &flags)) {
-                printf("--- 分层窗口信息 ---\n");
-                printf("透明度: %d (0-255)\n", alpha);
-                printf("标志: 0x%08lX\n", flags);
-                if (flags & LWA_ALPHA) printf("  LWA_ALPHA\n");
-                if (flags & LWA_COLORKEY) printf("  LWA_COLORKEY\n");
-            }
-        }
-
-        printf("--- DPI信息 ---\n");
-        UINT dpi = GetDpiForWindow(hwnd);
-        printf("窗口DPI: %u\n", dpi);
-
-        printf("==================== 结束 ====================\n\n");
     }
 
     return TRUE;
