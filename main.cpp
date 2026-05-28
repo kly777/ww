@@ -69,6 +69,15 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     GetClassNameW(hwnd, className, 256);
 
     if (IsWindowVisible(hwnd) && wcslen(windowTitle) > 0) {
+        // 排除不在虚拟桌面上的窗口（桌面 GUID 为零或获取不到）
+        if (g_pDesktopManager) {
+            GUID desktopId;
+            if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId))
+                || IsEqualGUID(desktopId, GUID_NULL)) {
+                return TRUE; // 跳过该窗口，继续枚举
+            }
+        }
+
         char titleUtf8[512];
         char classUtf8[512];
         WideToUtf8(windowTitle, titleUtf8, 512);
