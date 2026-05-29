@@ -4,7 +4,7 @@ ww_dev.exe: main.cpp
 	g++ -static -o ww_dev.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
 
 release: main.cpp
-	g++ -static -mwindows -DRELEASE -O2 -s -o ww.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
+	g++ -static -mwindows -DRELEASE -O3 -s -o ww.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
 
 clean:
 	rm -f ww_dev.exe ww.exe

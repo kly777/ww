@@ -566,8 +566,7 @@ BOOL CreateMessageWindow(HINSTANCE hInstance) {
     return g_hWnd != NULL;
 }
 
-// Makefile 中需加 -static 静态链接 libstdc++/libgcc，避免 clock_gettime64 符号缺失
-// g++ -static -mwindows -DRELEASE -O2 -s -o ww.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
+
 int main() {
     SetProcessDPIAware();  // 修复高 DPI 模糊
 #ifndef RELEASE
