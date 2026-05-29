@@ -1,7 +1,5 @@
 .PHONY: fmt run clean
 
-
-
 ww.exe: main.cpp
 	g++ -o ww.exe main.cpp -ldwmapi -lole32 -luuid
 

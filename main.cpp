@@ -139,14 +139,14 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
         int height = rect.bottom - rect.top;
 
         printf("--- 位置和大小 ---\n");
-        printf("位置: (%d, %d) - (%d, %d)\n", rect.left, rect.top, rect.right,
+        printf("位置: (%ld, %ld) - (%ld, %ld)\n", rect.left, rect.top, rect.right,
                rect.bottom);
         printf("大小: %d x %d\n", width, height);
 
         // 客户区大小
         RECT clientRect;
         GetClientRect(hwnd, &clientRect);
-        printf("客户区大小: %d x %d\n", clientRect.right - clientRect.left,
+        printf("客户区大小: %ld x %ld\n", clientRect.right - clientRect.left,
                clientRect.bottom - clientRect.top);
     }
 
