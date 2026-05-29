@@ -287,12 +287,15 @@ void RestoreSnapshot(int num) {
         }
     }
 
-    // DeferWindowPos 无法最大化，单独调用 ShowWindow（此时位置/Z轴已就位）
+    // DeferWindowPos 无法最大化/最小化/还原，单独调用 ShowWindow
+    // SWP_SHOWWINDOW 对已最小化窗口无效（只显示不展开），必须 SW_RESTORE 还原
     for (const auto& e : restored) {
         if (e.showCmd == SW_MAXIMIZE)
             ShowWindow(e.hwnd, SW_MAXIMIZE);
         else if (e.showCmd == SW_MINIMIZE)
             ShowWindow(e.hwnd, SW_MINIMIZE);
+        else
+            ShowWindow(e.hwnd, SW_RESTORE);
     }
 
     // 快照中没有匹配到的窗口 → 最小化
