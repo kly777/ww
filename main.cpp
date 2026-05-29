@@ -18,6 +18,7 @@
 #define WM_INIT_TRAY (WM_APP + 2)  // 延迟初始化托盘
 #define ID_TRAYICON 1
 #define ID_HOTKEY_BASE 100
+#define IDM_AUTOSTART 1001
 
 #ifdef RELEASE
 #define LOG(fmt, ...) ((void)0)
@@ -458,6 +459,39 @@ void UnregisterHotkeys(HWND hwnd) {
     }
 }
 
+// ---- 开机启动 ----
+BOOL IsAutoStartEnabled() {
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                      0, KEY_READ, &hKey) != ERROR_SUCCESS)
+        return FALSE;
+    wchar_t path[MAX_PATH];
+    DWORD size = sizeof(path);
+    DWORD type;
+    LSTATUS ret = RegQueryValueExW(hKey, L"WW", NULL, &type, (BYTE*)path,
+                                   &size);
+    RegCloseKey(hKey);
+    return ret == ERROR_SUCCESS;
+}
+
+void SetAutoStart(BOOL enable) {
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                      0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS)
+        return;
+    if (enable) {
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(NULL, path, MAX_PATH);
+        RegSetValueExW(hKey, L"WW", 0, REG_SZ, (BYTE*)path,
+                       (DWORD)(wcslen(path) + 1) * sizeof(wchar_t));
+    } else {
+        RegDeleteValueW(hKey, L"WW");
+    }
+    RegCloseKey(hKey);
+}
+
 // ---- 窗口过程 ----
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -493,12 +527,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (lParam == WM_RBUTTONUP) {
                 // 右键菜单
                 HMENU hMenu = CreatePopupMenu();
-                for (int i = 0; i <= 9; i++) {
-                    wchar_t item[32];
-                    swprintf(item, 32, L"数字 %d", i);
-                    AppendMenuW(hMenu, MF_STRING, ID_HOTKEY_BASE + i, item);
-                }
-                AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+                // AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+                AppendMenuW(hMenu, MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : 0),
+                            IDM_AUTOSTART, L"开机启动");
                 AppendMenuW(hMenu, MF_STRING, 1000, L"退出");
 
                 POINT pt;
@@ -508,10 +539,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                          pt.x, pt.y, 0, hwnd, NULL);
                 DestroyMenu(hMenu);
 
-                if (cmd == 1000) {
+                if (cmd == IDM_AUTOSTART) {
+                    SetAutoStart(!IsAutoStartEnabled());
+                } else if (cmd == 1000) {
                     DestroyWindow(hwnd);
-                } else if (cmd >= ID_HOTKEY_BASE && cmd <= ID_HOTKEY_BASE + 9) {
-                    SwitchToNumber(cmd - ID_HOTKEY_BASE);
                 }
             }
             return 0;
