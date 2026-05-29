@@ -262,6 +262,8 @@ void RestoreSnapshot(int num) {
     curWindows.reserve(MAX_WINDOWS);
     EnumWindows(CollectCurWindows, (LPARAM)&curWindows);
 
+    std::vector<bool> matched(curWindows.size(), false);
+
     // 匹配并恢复
     for (size_t i = 0; i < snap.windows.size(); i++) {
         SnapWindow& sw = snap.windows[i];
@@ -280,8 +282,16 @@ void RestoreSnapshot(int num) {
                 int h = sw.rect.bottom - sw.rect.top;
                 SetWindowPos(hwnd, NULL, sw.rect.left, sw.rect.top, w, h,
                              SWP_NOZORDER | SWP_NOACTIVATE);
+                matched[j] = true;
                 break;
             }
+        }
+    }
+
+    // 快照中没有匹配到的窗口 → 最小化
+    for (size_t j = 0; j < curWindows.size(); j++) {
+        if (!matched[j]) {
+            ShowWindow(curWindows[j].hwnd, SW_MINIMIZE);
         }
     }
 }
