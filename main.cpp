@@ -6,8 +6,11 @@
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <stdio.h>
-#include <string.h>
 #include <windows.h>
+
+#include <array>
+#include <string>
+#include <vector>
 
 #define MAX_WINDOWS 256
 #define WM_TRAYICON (WM_APP + 1)
@@ -25,9 +28,9 @@
 struct WindowInfo {
     HWND hwnd;
     UINT zOrder;
-    char title[256];
-    char className[256];
-    char processPath[512];
+    std::string title;
+    std::string className;
+    std::string processPath;
     UINT showCmd;  // SW_SHOWNORMAL / SW_MINIMIZE / SW_MAXIMIZE
     BOOL isVisible, isEnabled, isIconic, isZoomed, isActive;
     RECT windowRect, clientRect;
@@ -37,43 +40,45 @@ struct WindowInfo {
 
 // ---- 快照结构体 ----
 struct SnapWindow {
-    char title[256];
-    char className[256];
-    char processPath[512];
+    std::string title;
+    std::string className;
+    std::string processPath;
     RECT rect;
     UINT showCmd;
 };
 
 struct Snapshot {
-    BOOL hasData;
-    SnapWindow windows[MAX_WINDOWS];
-    int count;
+    BOOL hasData = FALSE;
+    std::vector<SnapWindow> windows;
 };
 
 // ---- 全局 ----
-static WindowInfo g_windows[MAX_WINDOWS];
-static int g_windowCount = 0;
+static std::vector<WindowInfo> g_windows;
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 static int g_trayNumber = 0;      // 托盘显示的数字 0-9
 static BOOL g_trayAdded = FALSE;  // 是否已 NIM_ADD
-static Snapshot g_snapshots[10];  // 每个数字的快照
+static std::array<Snapshot, 10> g_snapshots;  // 每个数字的快照
 static HWND g_hWnd = NULL;
 static HINSTANCE g_hInst = NULL;
 
 // ---- 工具函数 ----
-int WideToUtf8(const wchar_t* src, char* dst, int dstSize) {
-    return WideCharToMultiByte(CP_UTF8, 0, src, -1, dst, dstSize, NULL, NULL);
+std::string WideToUtf8(const wchar_t* src) {
+    int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, NULL, 0, NULL, NULL);
+    if (len <= 0) return {};
+    std::string result(len - 1, '\0');  // len includes null terminator
+    WideCharToMultiByte(CP_UTF8, 0, src, -1, &result[0], len, NULL, NULL);
+    return result;
 }
 
-void GuidToString(const GUID& guid, char* out, int outSize) {
+std::string GuidToString(const GUID& guid) {
     wchar_t* wstr = NULL;
     if (SUCCEEDED(StringFromCLSID(guid, &wstr)) && wstr) {
-        WideToUtf8(wstr, out, outSize);
+        std::string result = WideToUtf8(wstr);
         CoTaskMemFree(wstr);
-    } else {
-        snprintf(out, outSize, "未知");
+        return result;
     }
+    return "未知";
 }
 
 BOOL InitVirtualDesktopManager() {
@@ -95,15 +100,14 @@ void CleanupVirtualDesktopManager() {
 
 // ---- 填充 WindowInfo ----
 void FillWindowInfo(WindowInfo& w, HWND hwnd) {
-    memset(&w, 0, sizeof(w));
     w.hwnd = hwnd;
     w.zOrder = g_zOrderCounter++;
 
     wchar_t wTitle[256], wClass[256];
     GetWindowTextW(hwnd, wTitle, 256);
     GetClassNameW(hwnd, wClass, 256);
-    WideToUtf8(wTitle, w.title, sizeof(w.title));
-    WideToUtf8(wClass, w.className, sizeof(w.className));
+    w.title = WideToUtf8(wTitle);
+    w.className = WideToUtf8(wClass);
 
     w.isVisible = IsWindowVisible(hwnd);
     w.isEnabled = IsWindowEnabled(hwnd);
@@ -130,7 +134,7 @@ void FillWindowInfo(WindowInfo& w, HWND hwnd) {
         wchar_t pp[MAX_PATH];
         DWORD sz = MAX_PATH;
         if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
-            WideToUtf8(pp, w.processPath, sizeof(w.processPath));
+            w.processPath = WideToUtf8(pp);
         CloseHandle(hp);
     }
 
@@ -153,9 +157,10 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
             IsEqualGUID(desktopId, GUID_NULL))
             return TRUE;
     }
-    if (g_windowCount >= MAX_WINDOWS) return TRUE;
-    FillWindowInfo(g_windows[g_windowCount], hwnd);
-    g_windowCount++;
+    if (g_windows.size() >= MAX_WINDOWS) return TRUE;
+    WindowInfo wi;
+    FillWindowInfo(wi, hwnd);
+    g_windows.push_back(wi);
     return TRUE;
 }
 
@@ -164,14 +169,13 @@ void PrintWindowInfo(const WindowInfo& w) {
     LOG("==================== 窗口详细信息 ====================\n");
     LOG("窗口句柄: 0x%p\n", w.hwnd);
     LOG("Z-Order:  %u\n", w.zOrder);
-    LOG("窗口标题: %s\n", w.title);
-    LOG("窗口类名: %s\n", w.className);
+    LOG("窗口标题: %s\n", w.title.c_str());
+    LOG("窗口类名: %s\n", w.className.c_str());
 
     LOG("--- 虚拟桌面 ---\n");
     LOG("在当前虚拟桌面: %s\n", w.onCurrentDesktop ? "是" : "否");
-    char guidStr[128];
-    GuidToString(w.desktopId, guidStr, sizeof(guidStr));
-    LOG("所在桌面: %s\n", guidStr);
+    std::string guidStr = GuidToString(w.desktopId);
+    LOG("所在桌面: %s\n", guidStr.c_str());
 
     LOG("--- 窗口状态 ---\n");
     LOG("可见: %s\n", w.isVisible ? "是" : "否");
@@ -191,48 +195,43 @@ void PrintWindowInfo(const WindowInfo& w) {
 }
 
 // ---- 快照：保存/恢复窗口状态 ----
-void SaveSnapshot(int num, const WindowInfo* windows, int count) {
+void SaveSnapshot(int num, const std::vector<WindowInfo>& windows) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
-    snap.count = count < MAX_WINDOWS ? count : MAX_WINDOWS;
-    for (int i = 0; i < snap.count; i++) {
+    int count = (int)windows.size();
+    snap.windows.resize(count);
+    for (int i = 0; i < count; i++) {
         SnapWindow& sw = snap.windows[i];
-        strncpy(sw.title, windows[i].title, 255);
-        strncpy(sw.className, windows[i].className, 255);
-        strncpy(sw.processPath, windows[i].processPath, 511);
+        sw.title = windows[i].title;
+        sw.className = windows[i].className;
+        sw.processPath = windows[i].processPath;
         sw.rect = windows[i].windowRect;
         sw.showCmd = windows[i].showCmd;
     }
     snap.hasData = TRUE;
-    LOG("[快照] 保存 %d 个窗口到数字 %d\n", snap.count, num);
+    LOG("[快照] 保存 %d 个窗口到数字 %d\n", (int)snap.windows.size(), num);
 }
 
 // ---- 快照恢复时用的临时结构 ----
 struct CurWin {
     HWND hwnd;
-    char title[256];
-    char className[256];
-    char processPath[512];
-};
-
-struct CurWinCtx {
-    CurWin* wins;
-    int count;
-    int max;
+    std::string title;
+    std::string className;
+    std::string processPath;
 };
 
 BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
-    CurWinCtx* ctx = (CurWinCtx*)lParam;
+    auto* wins = (std::vector<CurWin>*)lParam;
     if (!IsWindowVisible(hwnd)) return TRUE;
     wchar_t wt[256], wc[256];
     GetWindowTextW(hwnd, wt, 256);
     if (wcslen(wt) == 0) return TRUE;
     GetClassNameW(hwnd, wc, 256);
-    if (ctx->count >= ctx->max) return TRUE;
+    if (wins->size() >= MAX_WINDOWS) return TRUE;
 
-    CurWin& cw = ctx->wins[ctx->count];
-    WideCharToMultiByte(CP_UTF8, 0, wt, -1, cw.title, 256, NULL, NULL);
-    WideCharToMultiByte(CP_UTF8, 0, wc, -1, cw.className, 256, NULL, NULL);
+    CurWin cw;
+    cw.title = WideToUtf8(wt);
+    cw.className = WideToUtf8(wc);
 
     DWORD pid;
     GetWindowThreadProcessId(hwnd, &pid);
@@ -241,12 +240,11 @@ BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
         wchar_t pp[MAX_PATH];
         DWORD sz = MAX_PATH;
         if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
-            WideCharToMultiByte(CP_UTF8, 0, pp, -1, cw.processPath, 512, NULL,
-                                NULL);
+            cw.processPath = WideToUtf8(pp);
         CloseHandle(hp);
     }
     cw.hwnd = hwnd;
-    ctx->count++;
+    wins->push_back(cw);
     return TRUE;
 }
 
@@ -258,21 +256,19 @@ void RestoreSnapshot(int num) {
         return;
     }
 
-    LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, snap.count);
+    LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)snap.windows.size());
 
-    CurWin curWindows[MAX_WINDOWS];
-    int curCount = 0;
-    CurWinCtx ctx = {curWindows, 0, MAX_WINDOWS};
-    EnumWindows(CollectCurWindows, (LPARAM)&ctx);
-    curCount = ctx.count;
+    std::vector<CurWin> curWindows;
+    curWindows.reserve(MAX_WINDOWS);
+    EnumWindows(CollectCurWindows, (LPARAM)&curWindows);
 
     // 匹配并恢复
-    for (int i = 0; i < snap.count; i++) {
+    for (size_t i = 0; i < snap.windows.size(); i++) {
         SnapWindow& sw = snap.windows[i];
-        for (int j = 0; j < curCount; j++) {
-            if (strcmp(sw.title, curWindows[j].title) == 0 &&
-                strcmp(sw.className, curWindows[j].className) == 0 &&
-                strcmp(sw.processPath, curWindows[j].processPath) == 0) {
+        for (size_t j = 0; j < curWindows.size(); j++) {
+            if (sw.title == curWindows[j].title &&
+                sw.className == curWindows[j].className &&
+                sw.processPath == curWindows[j].processPath) {
                 HWND hwnd = curWindows[j].hwnd;
                 // 先恢复状态（非最小化/最大化则用 SW_RESTORE）
                 UINT cmd = sw.showCmd;
@@ -296,12 +292,12 @@ void SwitchToNumber(int newNum) {
     if (newNum < 0 || newNum > 9 || newNum == g_trayNumber) return;
 
     // 先重新枚举当前窗口状态
-    g_windowCount = 0;
+    g_windows.clear();
     g_zOrderCounter = 0;
     EnumWindows(EnumWindowCallback, 0);
 
     // 保存当前状态到旧数字的快照
-    SaveSnapshot(g_trayNumber, g_windows, g_windowCount);
+    SaveSnapshot(g_trayNumber, g_windows);
 
     // 切换到新数字
     int oldNum = g_trayNumber;
@@ -528,13 +524,13 @@ int main() {
     // 枚举窗口
     LOG("开始枚举所有窗口...\n\n");
     EnumWindows(EnumWindowCallback, 0);
-    LOG("共 %d 个窗口\n\n", g_windowCount);
-    for (int i = 0; i < g_windowCount; i++) {
+    LOG("共 %d 个窗口\n\n", (int)g_windows.size());
+    for (size_t i = 0; i < g_windows.size(); i++) {
         PrintWindowInfo(g_windows[i]);
     }
 
     // 初始快照保存到数字 0
-    SaveSnapshot(0, g_windows, g_windowCount);
+    SaveSnapshot(0, g_windows);
 
     // 托盘 + 热键
     if (!CreateMessageWindow(g_hInst)) {
