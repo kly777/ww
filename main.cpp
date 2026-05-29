@@ -95,7 +95,10 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
     else
         w.showCmd = SW_SHOWNORMAL;
 
-    GetWindowRect(hwnd, &w.rect);
+    // 用 GetWindowPlacement 获取正常位置（最小化时 GetWindowRect 返回垃圾坐标）
+    WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
+    GetWindowPlacement(hwnd, &wp);
+    w.rect = wp.rcNormalPosition;
     LOG("[枚举] \"%s\" iconic=%d zoomed=%d rect=(%ld,%ld,%ld,%ld) %dx%d\n",
         w.title.c_str(), iconic, zoomed,
         w.rect.left, w.rect.top, w.rect.right,
