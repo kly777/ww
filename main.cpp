@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <string>
 #include <vector>
@@ -203,50 +204,53 @@ void RestoreSnapshot(int num) {
 
     std::vector<bool> matched(curWindows.size(), false);
 
-    // 匹配并恢复
+    // 收集匹配窗口，按 zOrder 排序后批量恢复位置/Z轴
+    struct MatchEntry {
+        HWND hwnd;
+        UINT zOrder;
+        RECT rect;
+        UINT showCmd;
+    };
+    std::vector<MatchEntry> restored;
+
     for (size_t i = 0; i < snap.windows.size(); i++) {
         WinInfo& sw = snap.windows[i];
-        LOG("[恢复] 快照[%zu]: \"%s\" showCmd=%u rect=(%ld,%ld,%ld,%ld)\n",
-            i, sw.title.c_str(), sw.showCmd, sw.rect.left, sw.rect.top,
-            sw.rect.right, sw.rect.bottom);
+        LOG("[恢复] 快照[%zu]: \"%s\" zOrder=%u showCmd=%u rect=(%ld,%ld,%ld,%ld)\n",
+            i, sw.title.c_str(), sw.zOrder, sw.showCmd, sw.rect.left,
+            sw.rect.top, sw.rect.right, sw.rect.bottom);
         for (size_t j = 0; j < curWindows.size(); j++) {
             if (sw.title == curWindows[j].title &&
                 sw.className == curWindows[j].className &&
                 sw.processPath == curWindows[j].processPath) {
-                HWND hwnd = curWindows[j].hwnd;
-                LOG("[恢复]   -> 匹配到 \"%s\" hwnd=0x%p\n",
-                    curWindows[j].title.c_str(), hwnd);
-
-                // 记录当前状态
-                RECT curRect;
-                GetWindowRect(hwnd, &curRect);
-                LOG("[恢复]      当前 rect=(%ld,%ld,%ld,%ld)\n",
-                    curRect.left, curRect.top, curRect.right, curRect.bottom);
-
-                // 先恢复状态（非最小化/最大化则用 SW_RESTORE）
-                UINT cmd = sw.showCmd;
-                if (cmd == SW_SHOWNORMAL) cmd = SW_SHOWNOACTIVATE;
-                LOG("[恢复]      ShowWindow(cmd=%u)\n", cmd);
-                ShowWindow(hwnd, cmd);
-
-                // 恢复到保存的位置和大小
-                int w = sw.rect.right - sw.rect.left;
-                int h = sw.rect.bottom - sw.rect.top;
-                LOG("[恢复]      SetWindowPos(%ld,%ld, %dx%d)\n",
-                    sw.rect.left, sw.rect.top, w, h);
-                SetWindowPos(hwnd, NULL, sw.rect.left, sw.rect.top, w, h,
-                             SWP_NOZORDER | SWP_NOACTIVATE);
-
-                RECT afterRect;
-                GetWindowRect(hwnd, &afterRect);
-                LOG("[恢复]      结果 rect=(%ld,%ld,%ld,%ld)\n",
-                    afterRect.left, afterRect.top, afterRect.right,
-                    afterRect.bottom);
-
                 matched[j] = true;
+                restored.push_back(
+                    {curWindows[j].hwnd, sw.zOrder, sw.rect, sw.showCmd});
                 break;
             }
         }
+    }
+
+    // 按 zOrder 升序（后→前），依次堆叠
+    std::sort(restored.begin(), restored.end(),
+              [](const MatchEntry& a, const MatchEntry& b) {
+                  return a.zOrder < b.zOrder;
+              });
+    HWND after = HWND_BOTTOM;
+    for (const auto& e : restored) {
+        int w = e.rect.right - e.rect.left;
+        int h = e.rect.bottom - e.rect.top;
+        LOG("[恢复]   SetWindowPos(hwnd=0x%p, z=%u) (%ld,%ld, %dx%d)\n",
+            e.hwnd, e.zOrder, e.rect.left, e.rect.top, w, h);
+        SetWindowPos(e.hwnd, after, e.rect.left, e.rect.top, w, h,
+                     SWP_NOACTIVATE);
+        after = e.hwnd;
+    }
+
+    // 位置就位后切换状态
+    for (const auto& e : restored) {
+        UINT cmd = e.showCmd;
+        if (cmd == SW_SHOWNORMAL) cmd = SW_RESTORE;
+        ShowWindow(e.hwnd, cmd);
     }
 
     // 快照中没有匹配到的窗口 → 最小化
