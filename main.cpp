@@ -245,29 +245,34 @@ void RestoreSnapshot(int num) {
         }
     }
 
-    // 按 zOrder 升序（后→前）：先处理普通窗口的位置/Z轴，最大化/最小化只调 ShowWindow
+    // 按 zOrder 降序：先设状态（SetWindowPlacement 一次性设位置+状态）
     std::sort(restored.begin(), restored.end(),
               [](const MatchEntry& a, const MatchEntry& b) {
                   return a.zOrder < b.zOrder;
               });
-    HWND after = HWND_BOTTOM;
+
+    // 第一步：SetWindowPlacement 设位置和状态
     for (const auto& e : restored) {
-        if (e.showCmd == SW_MAXIMIZE || e.showCmd == SW_MINIMIZE) continue;
-        int w = e.rect.right - e.rect.left;
-        int h = e.rect.bottom - e.rect.top;
-        LOG("[恢复]   SetWindowPos(hwnd=0x%p, z=%u) (%ld,%ld, %dx%d)\n",
-            e.hwnd, e.zOrder, e.rect.left, e.rect.top, w, h);
-        SetWindowPos(e.hwnd, after, e.rect.left, e.rect.top, w, h,
-                     SWP_NOACTIVATE);
-        after = e.hwnd;
+        WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
+        wp.rcNormalPosition = e.rect;
+        wp.showCmd = e.showCmd;
+        LOG("[恢复]   SetWindowPlacement(hwnd=0x%p, cmd=%u, rect=%ld,%ld,%ld,%ld)\n",
+            e.hwnd, wp.showCmd, e.rect.left, e.rect.top, e.rect.right,
+            e.rect.bottom);
+        SetWindowPlacement(e.hwnd, &wp);
     }
 
-    // 切换状态：最大化/最小化窗口直接 ShowWindow，普通窗口用 SW_RESTORE
+    // 第二步：消化 SetWindowPlacement 可能产生的异步消息，然后修复 Z 轴
+    MSG msg;
+    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    HWND after = HWND_BOTTOM;
     for (const auto& e : restored) {
-        UINT cmd = e.showCmd;
-        if (cmd == SW_SHOWNORMAL) cmd = SW_RESTORE;
-        LOG("[恢复]   ShowWindow(hwnd=0x%p, cmd=%u)\n", e.hwnd, cmd);
-        ShowWindow(e.hwnd, cmd);
+        SetWindowPos(e.hwnd, after, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        after = e.hwnd;
     }
 
     // 快照中没有匹配到的窗口 → 最小化
