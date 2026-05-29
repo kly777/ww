@@ -26,9 +26,7 @@ enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 #endif
 
-// ---- 窗口 / 快照结构体 ----
-// 合并了原 WindowInfo 和 SnapWindow，统一为 WinInfo
-// zOrder: 用于保存/恢复窗口堆叠顺序（EnumWindows 从上到下枚举，0=前台）
+// ---- 窗口 ----
 struct WinInfo {
     std::string title;
     std::string className;
@@ -48,6 +46,7 @@ static std::vector<WinInfo> g_windows;  // 用 vector 替代原始数组，自�
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 static int g_trayNumber = 1;                  // 托盘显示的数字 0-9
+static int g_prevTrayNumber = 0;              // 上一个数字，Ctrl+N 再按时切回
 static BOOL g_trayAdded = FALSE;              // 是否已 NIM_ADD
 static std::array<Snapshot, 10> g_snapshots;  // 每个数字的快照
 static HWND g_hWnd = NULL;
@@ -314,7 +313,12 @@ void RestoreSnapshot(int num) {
 // 切换前先枚举当前窗口状态并保存到旧槽位，再从新槽位恢复
 void UpdateTrayIcon();  // 前置声明
 void SwitchToNumber(int newNum) {
-    if (newNum < 0 || newNum > 9 || newNum == g_trayNumber) return;
+    if (newNum < 0 || newNum > 9) return;
+    // 再次按同一数字 → 回到上一个 snapshot
+    if (newNum == g_trayNumber) {
+        newNum = g_prevTrayNumber;
+        if (newNum == g_trayNumber) return;
+    }
 
     // 先重新枚举当前窗口状态
     g_windows.clear();
@@ -325,14 +329,14 @@ void SwitchToNumber(int newNum) {
     SaveSnapshot(g_trayNumber, g_windows);
 
     // 切换到新数字
-    int oldNum = g_trayNumber;
+    g_prevTrayNumber = g_trayNumber;
     g_trayNumber = newNum;
 
     // 恢复新数字的快照
     RestoreSnapshot(newNum);
 
     UpdateTrayIcon();
-    LOG("[切换] %d -> %d\n", oldNum, newNum);
+    LOG("[切换] %d -> %d\n", g_prevTrayNumber, newNum);
 }
 
 // ---- 动态生成带数字的托盘图标 ----
