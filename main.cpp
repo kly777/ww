@@ -2,18 +2,24 @@
 #define _WIN32_WINNT 0x0A00
 #define NTDDI_VERSION 0x0A000007
 
-#include <windows.h>
-#include <stdio.h>
-#include <string.h>
-#include <shobjidl.h>
 #include <ole2.h>
 #include <shellapi.h>
+#include <shobjidl.h>
+#include <stdio.h>
+#include <string.h>
+#include <windows.h>
 
-#define MAX_WINDOWS  256
-#define WM_TRAYICON   (WM_APP + 1)
-#define WM_INIT_TRAY  (WM_APP + 2)  // 延迟初始化托盘
-#define ID_TRAYICON   1
+#define MAX_WINDOWS 256
+#define WM_TRAYICON (WM_APP + 1)
+#define WM_INIT_TRAY (WM_APP + 2)  // 延迟初始化托盘
+#define ID_TRAYICON 1
 #define ID_HOTKEY_BASE 100
+
+#ifdef RELEASE
+#define LOG(fmt, ...) ((void)0)
+#else
+#define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#endif
 
 // ---- 窗口信息结构体 ----
 struct WindowInfo {
@@ -22,7 +28,7 @@ struct WindowInfo {
     char title[256];
     char className[256];
     char processPath[512];
-    UINT showCmd;   // SW_SHOWNORMAL / SW_MINIMIZE / SW_MAXIMIZE
+    UINT showCmd;  // SW_SHOWNORMAL / SW_MINIMIZE / SW_MAXIMIZE
     BOOL isVisible, isEnabled, isIconic, isZoomed, isActive;
     RECT windowRect, clientRect;
     BOOL onCurrentDesktop;
@@ -73,13 +79,17 @@ void GuidToString(const GUID& guid, char* out, int outSize) {
 BOOL InitVirtualDesktopManager() {
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) return FALSE;
-    hr = CoCreateInstance(CLSID_VirtualDesktopManager, NULL, CLSCTX_INPROC_SERVER,
-                          IID_IVirtualDesktopManager, (void**)&g_pDesktopManager);
+    hr = CoCreateInstance(CLSID_VirtualDesktopManager, NULL,
+                          CLSCTX_INPROC_SERVER, IID_IVirtualDesktopManager,
+                          (void**)&g_pDesktopManager);
     return SUCCEEDED(hr) && g_pDesktopManager;
 }
 
 void CleanupVirtualDesktopManager() {
-    if (g_pDesktopManager) { g_pDesktopManager->Release(); g_pDesktopManager = NULL; }
+    if (g_pDesktopManager) {
+        g_pDesktopManager->Release();
+        g_pDesktopManager = NULL;
+    }
     CoUninitialize();
 }
 
@@ -97,14 +107,17 @@ void FillWindowInfo(WindowInfo& w, HWND hwnd) {
 
     w.isVisible = IsWindowVisible(hwnd);
     w.isEnabled = IsWindowEnabled(hwnd);
-    w.isIconic  = IsIconic(hwnd);
-    w.isZoomed  = IsZoomed(hwnd);
-    w.isActive  = (GetForegroundWindow() == hwnd);
+    w.isIconic = IsIconic(hwnd);
+    w.isZoomed = IsZoomed(hwnd);
+    w.isActive = (GetForegroundWindow() == hwnd);
 
     // showCmd
-    if (w.isIconic)      w.showCmd = SW_MINIMIZE;
-    else if (w.isZoomed) w.showCmd = SW_MAXIMIZE;
-    else                 w.showCmd = SW_SHOWNORMAL;
+    if (w.isIconic)
+        w.showCmd = SW_MINIMIZE;
+    else if (w.isZoomed)
+        w.showCmd = SW_MAXIMIZE;
+    else
+        w.showCmd = SW_SHOWNORMAL;
 
     GetWindowRect(hwnd, &w.windowRect);
     GetClientRect(hwnd, &w.clientRect);
@@ -122,7 +135,8 @@ void FillWindowInfo(WindowInfo& w, HWND hwnd) {
     }
 
     if (g_pDesktopManager) {
-        g_pDesktopManager->IsWindowOnCurrentVirtualDesktop(hwnd, &w.onCurrentDesktop);
+        g_pDesktopManager->IsWindowOnCurrentVirtualDesktop(hwnd,
+                                                           &w.onCurrentDesktop);
         g_pDesktopManager->GetWindowDesktopId(hwnd, &w.desktopId);
     }
 }
@@ -135,8 +149,9 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     if (wcslen(title) == 0) return TRUE;
     if (g_pDesktopManager) {
         GUID desktopId;
-        if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId))
-            || IsEqualGUID(desktopId, GUID_NULL)) return TRUE;
+        if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId)) ||
+            IsEqualGUID(desktopId, GUID_NULL))
+            return TRUE;
     }
     if (g_windowCount >= MAX_WINDOWS) return TRUE;
     FillWindowInfo(g_windows[g_windowCount], hwnd);
@@ -146,36 +161,33 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
 
 // ---- 输出 ----
 void PrintWindowInfo(const WindowInfo& w) {
-    printf("==================== 窗口详细信息 ====================\n");
-    printf("窗口句柄: 0x%p\n", w.hwnd);
-    printf("Z-Order:  %u\n", w.zOrder);
-    printf("窗口标题: %s\n", w.title);
-    printf("窗口类名: %s\n", w.className);
+    LOG("==================== 窗口详细信息 ====================\n");
+    LOG("窗口句柄: 0x%p\n", w.hwnd);
+    LOG("Z-Order:  %u\n", w.zOrder);
+    LOG("窗口标题: %s\n", w.title);
+    LOG("窗口类名: %s\n", w.className);
 
-    printf("--- 虚拟桌面 ---\n");
-    printf("在当前虚拟桌面: %s\n", w.onCurrentDesktop ? "是" : "否");
+    LOG("--- 虚拟桌面 ---\n");
+    LOG("在当前虚拟桌面: %s\n", w.onCurrentDesktop ? "是" : "否");
     char guidStr[128];
     GuidToString(w.desktopId, guidStr, sizeof(guidStr));
-    printf("所在桌面: %s\n", guidStr);
+    LOG("所在桌面: %s\n", guidStr);
 
-    printf("--- 窗口状态 ---\n");
-    printf("可见: %s\n", w.isVisible ? "是" : "否");
-    printf("可用: %s\n", w.isEnabled ? "是" : "否");
-    printf("最小化: %s\n", w.isIconic ? "是" : "否");
-    printf("最大化: %s\n", w.isZoomed ? "是" : "否");
-    printf("前台窗口: %s\n", w.isActive ? "是" : "否");
+    LOG("--- 窗口状态 ---\n");
+    LOG("可见: %s\n", w.isVisible ? "是" : "否");
+    LOG("可用: %s\n", w.isEnabled ? "是" : "否");
+    LOG("最小化: %s\n", w.isIconic ? "是" : "否");
+    LOG("最大化: %s\n", w.isZoomed ? "是" : "否");
+    LOG("前台窗口: %s\n", w.isActive ? "是" : "否");
 
-    printf("--- 位置和大小 ---\n");
-    printf("位置: (%d, %d) - (%d, %d)\n",
-           w.windowRect.left, w.windowRect.top,
-           w.windowRect.right, w.windowRect.bottom);
-    printf("大小: %d x %d\n",
-           w.windowRect.right - w.windowRect.left,
-           w.windowRect.bottom - w.windowRect.top);
-    printf("客户区大小: %d x %d\n",
-           w.clientRect.right - w.clientRect.left,
-           w.clientRect.bottom - w.clientRect.top);
-    printf("==================== 结束 ====================\n\n");
+    LOG("--- 位置和大小 ---\n");
+    LOG("位置: (%d, %d) - (%d, %d)\n", w.windowRect.left, w.windowRect.top,
+        w.windowRect.right, w.windowRect.bottom);
+    LOG("大小: %d x %d\n", w.windowRect.right - w.windowRect.left,
+        w.windowRect.bottom - w.windowRect.top);
+    LOG("客户区大小: %d x %d\n", w.clientRect.right - w.clientRect.left,
+        w.clientRect.bottom - w.clientRect.top);
+    LOG("==================== 结束 ====================\n\n");
 }
 
 // ---- 快照：保存/恢复窗口状态 ----
@@ -192,7 +204,7 @@ void SaveSnapshot(int num, const WindowInfo* windows, int count) {
         sw.showCmd = windows[i].showCmd;
     }
     snap.hasData = TRUE;
-    printf("[快照] 保存 %d 个窗口到数字 %d\n", snap.count, num);
+    LOG("[快照] 保存 %d 个窗口到数字 %d\n", snap.count, num);
 }
 
 // ---- 快照恢复时用的临时结构 ----
@@ -229,7 +241,8 @@ BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
         wchar_t pp[MAX_PATH];
         DWORD sz = MAX_PATH;
         if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
-            WideCharToMultiByte(CP_UTF8, 0, pp, -1, cw.processPath, 512, NULL, NULL);
+            WideCharToMultiByte(CP_UTF8, 0, pp, -1, cw.processPath, 512, NULL,
+                                NULL);
         CloseHandle(hp);
     }
     cw.hwnd = hwnd;
@@ -241,15 +254,15 @@ void RestoreSnapshot(int num) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
     if (!snap.hasData) {
-        printf("[快照] 数字 %d 无快照，跳过恢复\n", num);
+        LOG("[快照] 数字 %d 无快照，跳过恢复\n", num);
         return;
     }
 
-    printf("[快照] 从数字 %d 恢复 %d 个窗口\n", num, snap.count);
+    LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, snap.count);
 
     CurWin curWindows[MAX_WINDOWS];
     int curCount = 0;
-    CurWinCtx ctx = { curWindows, 0, MAX_WINDOWS };
+    CurWinCtx ctx = {curWindows, 0, MAX_WINDOWS};
     EnumWindows(CollectCurWindows, (LPARAM)&ctx);
     curCount = ctx.count;
 
@@ -260,7 +273,6 @@ void RestoreSnapshot(int num) {
             if (strcmp(sw.title, curWindows[j].title) == 0 &&
                 strcmp(sw.className, curWindows[j].className) == 0 &&
                 strcmp(sw.processPath, curWindows[j].processPath) == 0) {
-
                 HWND hwnd = curWindows[j].hwnd;
                 // 先恢复状态（非最小化/最大化则用 SW_RESTORE）
                 UINT cmd = sw.showCmd;
@@ -299,7 +311,7 @@ void SwitchToNumber(int newNum) {
     RestoreSnapshot(newNum);
 
     UpdateTrayIcon();
-    printf("[切换] %d -> %d\n", oldNum, newNum);
+    LOG("[切换] %d -> %d\n", oldNum, newNum);
 }
 
 // ---- 动态生成带数字的托盘图标 ----
@@ -319,12 +331,13 @@ HICON CreateNumberIcon(int number) {
     bi.bmiHeader.biCompression = BI_RGB;
 
     void* bits = NULL;
-    HBITMAP hBmpColor = CreateDIBSection(memDC, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    HBITMAP hBmpColor =
+        CreateDIBSection(memDC, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
 
     HBITMAP hOld = (HBITMAP)SelectObject(memDC, hBmpColor);
 
     // 蓝色背景
-    RECT rc = { 0, 0, w, h };
+    RECT rc = {0, 0, w, h};
     HBRUSH hBrBg = CreateSolidBrush(RGB(30, 100, 210));
     FillRect(memDC, &rc, hBrBg);
     DeleteObject(hBrBg);
@@ -343,13 +356,15 @@ HICON CreateNumberIcon(int number) {
     // 白色数字
     SetBkMode(memDC, TRANSPARENT);
     SetTextColor(memDC, RGB(255, 255, 255));
-    wchar_t num[2] = { (wchar_t)(L'0' + number), 0 };
-    HFONT hFont = CreateFontW(34, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                               ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    wchar_t num[2] = {(wchar_t)(L'0' + number), 0};
+    HFONT hFont = CreateFontW(34, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     HFONT hFontOld = (HFONT)SelectObject(memDC, hFont);
-    SIZE sz; GetTextExtentPoint32W(memDC, num, 1, &sz);
-    TEXTMETRIC tm; GetTextMetrics(memDC, &tm);
+    SIZE sz;
+    GetTextExtentPoint32W(memDC, num, 1, &sz);
+    TEXTMETRIC tm;
+    GetTextMetrics(memDC, &tm);
     int y = (h - tm.tmAscent) / 2 - 5;
     TextOutW(memDC, (w - sz.cx) / 2, y, num, 1);
     SelectObject(memDC, hFontOld);
@@ -358,8 +373,7 @@ HICON CreateNumberIcon(int number) {
 
     // 设置 alpha 通道为 255 (不透明)
     if (bits) {
-        for (int i = 0; i < w * h; i++)
-            ((BYTE*)bits)[i * 4 + 3] = 0xFF;
+        for (int i = 0; i < w * h; i++) ((BYTE*)bits)[i * 4 + 3] = 0xFF;
     }
 
     // 掩码: 全白 = 全部不透明
@@ -403,7 +417,7 @@ void UpdateTrayIcon() {
         nid.hIcon = CreateNumberIcon(g_trayNumber);
         swprintf(nid.szTip, 128, L"数字: %d", g_trayNumber);
         if (!Shell_NotifyIconW(NIM_MODIFY, &nid))
-            printf("[!] NIM_MODIFY 失败: %lu\n", GetLastError());
+            LOG("[!] NIM_MODIFY 失败: %lu\n", GetLastError());
         if (nid.hIcon) DestroyIcon(nid.hIcon);
     }
 }
@@ -412,7 +426,8 @@ void UpdateTrayIcon() {
 void RegisterHotkeys(HWND hwnd) {
     // Ctrl+0 ~ Ctrl+9
     for (int i = 0; i <= 9; i++) {
-        RegisterHotKey(hwnd, ID_HOTKEY_BASE + i, MOD_CONTROL | MOD_NOREPEAT, '0' + i);
+        RegisterHotKey(hwnd, ID_HOTKEY_BASE + i, MOD_CONTROL | MOD_NOREPEAT,
+                       '0' + i);
     }
 }
 
@@ -425,61 +440,61 @@ void UnregisterHotkeys(HWND hwnd) {
 // ---- 窗口过程 ----
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-    case WM_CREATE: {
-        RegisterHotkeys(hwnd);
-        PostMessage(hwnd, WM_INIT_TRAY, 0, 0);  // 延迟到消息循环启动
-        return 0;
-    }
-
-    case WM_INIT_TRAY: {
-        UpdateTrayIcon();
-        return 0;
-    }
-
-    case WM_DESTROY: {
-        UnregisterHotkeys(hwnd);
-        NOTIFYICONDATAW nid = {};
-        nid.cbSize = sizeof(nid);
-        nid.hWnd = hwnd;
-        nid.uID = ID_TRAYICON;
-        Shell_NotifyIconW(NIM_DELETE, &nid);
-        PostQuitMessage(0);
-        return 0;
-    }
-
-    case WM_HOTKEY: {
-        int key = (int)wParam - ID_HOTKEY_BASE;
-        if (key >= 0 && key <= 9) SwitchToNumber(key);
-        return 0;
-    }
-
-    case WM_TRAYICON: {
-        if (lParam == WM_RBUTTONUP) {
-            // 右键菜单
-            HMENU hMenu = CreatePopupMenu();
-            for (int i = 0; i <= 9; i++) {
-                wchar_t item[32];
-                swprintf(item, 32, L"数字 %d", i);
-                AppendMenuW(hMenu, MF_STRING, ID_HOTKEY_BASE + i, item);
-            }
-            AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hMenu, MF_STRING, 1000, L"退出");
-
-            POINT pt;
-            GetCursorPos(&pt);
-            SetForegroundWindow(hwnd);  // 确保菜单能正常关闭
-            int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY,
-                                      pt.x, pt.y, 0, hwnd, NULL);
-            DestroyMenu(hMenu);
-
-            if (cmd == 1000) {
-                DestroyWindow(hwnd);
-            } else if (cmd >= ID_HOTKEY_BASE && cmd <= ID_HOTKEY_BASE + 9) {
-                SwitchToNumber(cmd - ID_HOTKEY_BASE);
-            }
+        case WM_CREATE: {
+            RegisterHotkeys(hwnd);
+            PostMessage(hwnd, WM_INIT_TRAY, 0, 0);  // 延迟到消息循环启动
+            return 0;
         }
-        return 0;
-    }
+
+        case WM_INIT_TRAY: {
+            UpdateTrayIcon();
+            return 0;
+        }
+
+        case WM_DESTROY: {
+            UnregisterHotkeys(hwnd);
+            NOTIFYICONDATAW nid = {};
+            nid.cbSize = sizeof(nid);
+            nid.hWnd = hwnd;
+            nid.uID = ID_TRAYICON;
+            Shell_NotifyIconW(NIM_DELETE, &nid);
+            PostQuitMessage(0);
+            return 0;
+        }
+
+        case WM_HOTKEY: {
+            int key = (int)wParam - ID_HOTKEY_BASE;
+            if (key >= 0 && key <= 9) SwitchToNumber(key);
+            return 0;
+        }
+
+        case WM_TRAYICON: {
+            if (lParam == WM_RBUTTONUP) {
+                // 右键菜单
+                HMENU hMenu = CreatePopupMenu();
+                for (int i = 0; i <= 9; i++) {
+                    wchar_t item[32];
+                    swprintf(item, 32, L"数字 %d", i);
+                    AppendMenuW(hMenu, MF_STRING, ID_HOTKEY_BASE + i, item);
+                }
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+                AppendMenuW(hMenu, MF_STRING, 1000, L"退出");
+
+                POINT pt;
+                GetCursorPos(&pt);
+                SetForegroundWindow(hwnd);  // 确保菜单能正常关闭
+                int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY,
+                                         pt.x, pt.y, 0, hwnd, NULL);
+                DestroyMenu(hMenu);
+
+                if (cmd == 1000) {
+                    DestroyWindow(hwnd);
+                } else if (cmd >= ID_HOTKEY_BASE && cmd <= ID_HOTKEY_BASE + 9) {
+                    SwitchToNumber(cmd - ID_HOTKEY_BASE);
+                }
+            }
+            return 0;
+        }
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
@@ -494,24 +509,26 @@ BOOL CreateMessageWindow(HINSTANCE hInstance) {
     wc.lpszClassName = CLASS_NAME;
     RegisterClassW(&wc);
 
-    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"WW", WS_POPUP,
-                             0, 0, 0, 0, NULL, NULL, hInstance, NULL);
+    g_hWnd = CreateWindowExW(0, CLASS_NAME, L"WW", WS_POPUP, 0, 0, 0, 0, NULL,
+                             NULL, hInstance, NULL);
     return g_hWnd != NULL;
 }
 
 // ---- 主函数 ----
 int main() {
     SetProcessDPIAware();  // 修复高 DPI 模糊
+#ifndef RELEASE
     SetConsoleOutputCP(CP_UTF8);
+#endif
     g_hInst = GetModuleHandle(NULL);
 
     // COM 初始化
     InitVirtualDesktopManager();
 
     // 枚举窗口
-    printf("开始枚举所有窗口...\n\n");
+    LOG("开始枚举所有窗口...\n\n");
     EnumWindows(EnumWindowCallback, 0);
-    printf("共 %d 个窗口\n\n", g_windowCount);
+    LOG("共 %d 个窗口\n\n", g_windowCount);
     for (int i = 0; i < g_windowCount; i++) {
         PrintWindowInfo(g_windows[i]);
     }
@@ -521,13 +538,13 @@ int main() {
 
     // 托盘 + 热键
     if (!CreateMessageWindow(g_hInst)) {
-        printf("创建消息窗口失败\n");
+        LOG("创建消息窗口失败\n");
         CleanupVirtualDesktopManager();
         return 1;
     }
 
-    printf("\n=== 托盘图标已创建 ===\n");
-    printf("Ctrl+0~Ctrl+9 切换托盘数字 | 右键托盘图标选择数字或退出\n\n");
+    LOG("\n=== 托盘图标已创建 ===\n");
+    LOG("Ctrl+0~Ctrl+9 切换托盘数字 | 右键托盘图标选择数字或退出\n\n");
 
     // 消息循环
     MSG msg;

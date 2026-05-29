@@ -1,13 +1,16 @@
-.PHONY: fmt run clean
+.PHONY: fmt run clean release
 
-ww.exe: main.cpp
-	g++ -o ww.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
+ww_dev.exe: main.cpp
+	g++ -o ww_dev.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
+
+release:
+	g++ -mwindows -DRELEASE -O2 -s -o ww.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
 
 clean:
-	rm -f ww.exe
+	rm -f ww_dev.exe ww.exe
 
-run: ww.exe
-	./ww.exe
+dev: ww_dev.exe
+	./ww_dev.exe
 
 fmt:
 	clang-format -i main.cpp
