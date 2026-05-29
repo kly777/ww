@@ -181,11 +181,11 @@ void PrintWindowInfo(const WindowInfo& w) {
     LOG("前台窗口: %s\n", w.isActive ? "是" : "否");
 
     LOG("--- 位置和大小 ---\n");
-    LOG("位置: (%d, %d) - (%d, %d)\n", w.windowRect.left, w.windowRect.top,
+    LOG("位置: (%ld, %ld) - (%ld, %ld)\n", w.windowRect.left, w.windowRect.top,
         w.windowRect.right, w.windowRect.bottom);
-    LOG("大小: %d x %d\n", w.windowRect.right - w.windowRect.left,
+    LOG("大小: %ld x %ld\n", w.windowRect.right - w.windowRect.left,
         w.windowRect.bottom - w.windowRect.top);
-    LOG("客户区大小: %d x %d\n", w.clientRect.right - w.clientRect.left,
+    LOG("客户区大小: %ld x %ld\n", w.clientRect.right - w.clientRect.left,
         w.clientRect.bottom - w.clientRect.top);
     LOG("==================== 结束 ====================\n\n");
 }
