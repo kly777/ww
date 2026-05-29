@@ -94,15 +94,24 @@ std::string GetProcessPath(HWND hwnd) {
     return path;
 }
 
+struct TitleClass {
+    std::string title;
+    std::string className;
+};
+TitleClass GetWindowTitleAndClass(HWND hwnd) {
+    wchar_t wt[256], wc[256];
+    GetWindowTextW(hwnd, wt, 256);
+    GetClassNameW(hwnd, wc, 256);
+    return {WideToUtf8(wt), WideToUtf8(wc)};
+}
+
 // ---- 填充 WinInfo ----
 void FillWindowInfo(WinInfo& w, HWND hwnd) {
     w.zOrder = g_zOrderCounter++;
 
-    wchar_t wTitle[256], wClass[256];
-    GetWindowTextW(hwnd, wTitle, 256);
-    GetClassNameW(hwnd, wClass, 256);
-    w.title = WideToUtf8(wTitle);
-    w.className = WideToUtf8(wClass);
+    auto tc = GetWindowTitleAndClass(hwnd);
+    w.title = tc.title;
+    w.className = tc.className;
 
     BOOL iconic = IsIconic(hwnd);
     BOOL zoomed = IsZoomed(hwnd);
@@ -188,11 +197,9 @@ BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
     if (wins->size() >= MAX_WINDOWS) return TRUE;
 
     CurWin cw;
-    wchar_t wt[256], wc[256];
-    GetWindowTextW(hwnd, wt, 256);
-    GetClassNameW(hwnd, wc, 256);
-    cw.title = WideToUtf8(wt);
-    cw.className = WideToUtf8(wc);
+    auto tc = GetWindowTitleAndClass(hwnd);
+    cw.title = tc.title;
+    cw.className = tc.className;
     cw.processPath = GetProcessPath(hwnd);
     cw.hwnd = hwnd;
     wins->push_back(cw);
