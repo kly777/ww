@@ -119,9 +119,12 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
 // ---- 枚举回调 ----
 BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     if (!IsWindowVisible(hwnd)) return TRUE;
-    wchar_t title[256];
+    wchar_t title[256], wclass[256];
     GetWindowTextW(hwnd, title, 256);
     if (wcslen(title) == 0) return TRUE;
+    GetClassNameW(hwnd, wclass, 256);
+    // 跳过 Program Manager（桌面）
+    if (_wcsicmp(wclass, L"Progman") == 0) return TRUE;
     if (g_pDesktopManager) {
         GUID desktopId;
         if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId)) ||
@@ -166,6 +169,15 @@ BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
     GetWindowTextW(hwnd, wt, 256);
     if (wcslen(wt) == 0) return TRUE;
     GetClassNameW(hwnd, wc, 256);
+    // 跳过 Program Manager（桌面）
+    if (_wcsicmp(wc, L"Progman") == 0) return TRUE;
+    // 跳过不在当前虚拟桌面的窗口
+    if (g_pDesktopManager) {
+        GUID desktopId;
+        if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId)) ||
+            IsEqualGUID(desktopId, GUID_NULL))
+            return TRUE;
+    }
     if (wins->size() >= MAX_WINDOWS) return TRUE;
 
     CurWin cw;
