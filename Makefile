@@ -1,19 +1,30 @@
-.PHONY: fmt run clean release
+.PHONY: all clean dev release fmt
 
-ww_dev.exe: main.cpp
-	g++ -static -o ww_dev.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
+CXX      := g++
+CXXFLAGS := -static -O3 -s -DRELEASE
+LIBS     := -lole32 -luuid -lshell32 -lgdi32
+SRC      := main.cpp
+BUILDDIR := build
 
-ww.exe: main.cpp
-	g++ -static -mwindows -DRELEASE -O3 -s -o ww.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
+
+all: release
+
+$(BUILDDIR):
+	mkdir -p $(BUILDDIR)
+
+$(BUILDDIR)/ww_dev.exe: $(SRC) | $(BUILDDIR)
+	$(CXX) -std=c++17 -static -o $@ $(SRC) $(LIBS)
+
+$(BUILDDIR)/ww.exe: $(SRC) | $(BUILDDIR)
+	$(CXX) -std=c++17 $(CXXFLAGS) -mwindows -o $@ $(SRC) $(LIBS)
+
+dev: $(BUILDDIR)/ww_dev.exe
+	./$(BUILDDIR)/ww_dev.exe
+
+release: $(BUILDDIR)/ww.exe
 
 clean:
-	rm -f ww_dev.exe ww.exe
-
-dev: ww_dev.exe
-	./ww_dev.exe
-
-release: ww.exe
-	./ww.exe
+	rm -rf $(BUILDDIR)
 
 fmt:
-	clang-format -i main.cpp
+	clang-format -i $(SRC)
