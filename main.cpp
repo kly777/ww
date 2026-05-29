@@ -225,15 +225,18 @@ void RestoreSnapshot(int num) {
     };
     std::vector<MatchEntry> restored;
 
+    auto IsSameWindow = [](const WinInfo& snap, const CurWin& cur) {
+        return snap.title == cur.title && snap.className == cur.className &&
+               snap.processPath == cur.processPath;
+    };
+
     for (size_t i = 0; i < snap.windows.size(); i++) {
         WinInfo& sw = snap.windows[i];
         LOG("[恢复] 快照[%zu]: \"%s\" zOrder=%u showCmd=%u rect=(%ld,%ld,%ld,%ld)\n",
             i, sw.title.c_str(), sw.zOrder, sw.showCmd, sw.rect.left,
             sw.rect.top, sw.rect.right, sw.rect.bottom);
         for (size_t j = 0; j < curWindows.size(); j++) {
-            if (sw.title == curWindows[j].title &&
-                sw.className == curWindows[j].className &&
-                sw.processPath == curWindows[j].processPath) {
+            if (IsSameWindow(sw, curWindows[j])) {
                 matched[j] = true;
                 restored.push_back(
                     {curWindows[j].hwnd, sw.zOrder, sw.rect, sw.showCmd});
