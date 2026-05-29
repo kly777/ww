@@ -79,6 +79,21 @@ void CleanupVirtualDesktopManager() {
     CoUninitialize();
 }
 
+// 获取窗口所属进程的路径
+std::string GetProcessPath(HWND hwnd) {
+    DWORD pid;
+    GetWindowThreadProcessId(hwnd, &pid);
+    HANDLE hp = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (!hp) return {};
+    wchar_t pp[MAX_PATH];
+    DWORD sz = MAX_PATH;
+    std::string path;
+    if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
+        path = WideToUtf8(pp);
+    CloseHandle(hp);
+    return path;
+}
+
 // ---- 填充 WinInfo ----
 void FillWindowInfo(WinInfo& w, HWND hwnd) {
     w.zOrder = g_zOrderCounter++;
@@ -111,17 +126,7 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
         w.rect.right - w.rect.left,
         w.rect.bottom - w.rect.top);
 
-    // 进程路径（用于快照匹配）
-    DWORD pid;
-    GetWindowThreadProcessId(hwnd, &pid);
-    HANDLE hp = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (hp) {
-        wchar_t pp[MAX_PATH];
-        DWORD sz = MAX_PATH;
-        if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
-            w.processPath = WideToUtf8(pp);
-        CloseHandle(hp);
-    }
+    w.processPath = GetProcessPath(hwnd);
 }
 
 // ---- 窗口过滤（保存和恢复共用）----
@@ -188,17 +193,7 @@ BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
     GetClassNameW(hwnd, wc, 256);
     cw.title = WideToUtf8(wt);
     cw.className = WideToUtf8(wc);
-
-    DWORD pid;
-    GetWindowThreadProcessId(hwnd, &pid);
-    HANDLE hp = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (hp) {
-        wchar_t pp[MAX_PATH];
-        DWORD sz = MAX_PATH;
-        if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
-            cw.processPath = WideToUtf8(pp);
-        CloseHandle(hp);
-    }
+    cw.processPath = GetProcessPath(hwnd);
     cw.hwnd = hwnd;
     wins->push_back(cw);
     return TRUE;
