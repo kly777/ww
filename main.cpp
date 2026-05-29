@@ -26,6 +26,8 @@
 #endif
 
 // ---- 窗口 / 快照结构体 ----
+// 合并了原 WindowInfo 和 SnapWindow，统一为 WinInfo
+// zOrder: 用于保存/恢复窗口堆叠顺序（EnumWindows 从上到下枚举，0=前台）
 struct WinInfo {
     std::string title;
     std::string className;
@@ -41,7 +43,7 @@ struct Snapshot {
 };
 
 // ---- 全局 ----
-static std::vector<WinInfo> g_windows;
+static std::vector<WinInfo> g_windows;  // 用 vector 替代原始数组，自动管理内存
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 static int g_trayNumber = 1;      // 托盘显示的数字 0-9
@@ -51,6 +53,7 @@ static HWND g_hWnd = NULL;
 static HINSTANCE g_hInst = NULL;
 
 // ---- 工具函数 ----
+// 原来的 WideToUtf8 写入 char* 缓冲区，改为返回 std::string，避免缓冲区溢出风险
 std::string WideToUtf8(const wchar_t* src) {
     int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, NULL, 0, NULL, NULL);
     if (len <= 0) return {};
@@ -95,7 +98,9 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
     else
         w.showCmd = SW_SHOWNORMAL;
 
-    // 用 GetWindowPlacement 获取正常位置（最小化时 GetWindowRect 返回垃圾坐标）
+    // 用 GetWindowPlacement 获取正常位置，而非 GetWindowRect
+    // 问题：最小化窗口的 GetWindowRect 返回 (-32000,-32000) 等垃圾坐标
+    // 解决：GetWindowPlacement 的 rcNormalPosition 始终返回正常（非最小化）位置
     WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
     GetWindowPlacement(hwnd, &wp);
     w.rect = wp.rcNormalPosition;
@@ -120,6 +125,7 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
 }
 
 // ---- 枚举回调 ----
+// 只收集可见、有标题、非桌面、在当前虚拟桌面的顶层窗口
 BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     if (!IsWindowVisible(hwnd)) return TRUE;
     wchar_t title[256], wclass[256];
@@ -142,6 +148,7 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
 }
 
 // ---- 快照：保存/恢复窗口状态 ----
+// 保存时直接拷贝 g_windows 向量（WinInfo 已含所有必要字段）
 void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
@@ -165,6 +172,8 @@ struct CurWin {
     std::string processPath;
 };
 
+// CollectCurWindows: 恢复时枚举当前窗口，过滤规则与 EnumWindowCallback 一致
+// 避免抓入 Program Manager、其他虚拟桌面等不应处理的窗口
 BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
     auto* wins = (std::vector<CurWin>*)lParam;
     if (!IsWindowVisible(hwnd)) return TRUE;
@@ -245,34 +254,47 @@ void RestoreSnapshot(int num) {
         }
     }
 
-    // 按 zOrder 降序：先设状态（SetWindowPlacement 一次性设位置+状态）
+    // zOrder 排序说明：
+    // EnumWindows 从上到下（前台→后台）枚举，zOrder 小=前台，大=后台
+    // 升序排列后从 HWND_BOTTOM 逐层堆叠：小 zOrder（前台）最后放 → 留在顶层
     std::sort(restored.begin(), restored.end(),
               [](const MatchEntry& a, const MatchEntry& b) {
                   return a.zOrder < b.zOrder;
               });
 
-    // 第一步：SetWindowPlacement 设位置和状态
-    for (const auto& e : restored) {
-        WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
-        wp.rcNormalPosition = e.rect;
-        wp.showCmd = e.showCmd;
-        LOG("[恢复]   SetWindowPlacement(hwnd=0x%p, cmd=%u, rect=%ld,%ld,%ld,%ld)\n",
-            e.hwnd, wp.showCmd, e.rect.left, e.rect.top, e.rect.right,
-            e.rect.bottom);
-        SetWindowPlacement(e.hwnd, &wp);
+    // 用 DeferWindowPos 一次原子操作完成所有窗口的位置、大小、显示、Z 轴设置
+    // 避免 SetWindowPlacement + SetWindowPos 两次重绘导致的闪烁
+    if (!restored.empty()) {
+        HDWP hdwp = BeginDeferWindowPos((int)restored.size());
+        if (hdwp) {
+            HWND after = HWND_BOTTOM;
+            for (const auto& e : restored) {
+                UINT flags = SWP_NOACTIVATE;
+                int x = 0, y = 0, w = 0, h = 0;
+                if (e.showCmd == SW_MINIMIZE) {
+                    flags |= SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW;
+                } else if (e.showCmd == SW_MAXIMIZE) {
+                    flags |= SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
+                } else {
+                    x = e.rect.left; y = e.rect.top;
+                    w = e.rect.right - e.rect.left;
+                    h = e.rect.bottom - e.rect.top;
+                    flags |= SWP_SHOWWINDOW;
+                }
+                hdwp = DeferWindowPos(hdwp, e.hwnd, after, x, y, w, h, flags);
+                if (!hdwp) break;
+                after = e.hwnd;
+            }
+            if (hdwp) EndDeferWindowPos(hdwp);
+        }
     }
 
-    // 第二步：消化 SetWindowPlacement 可能产生的异步消息，然后修复 Z 轴
-    MSG msg;
-    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-    HWND after = HWND_BOTTOM;
+    // DeferWindowPos 无法最大化，单独调用 ShowWindow（此时位置/Z轴已就位）
     for (const auto& e : restored) {
-        SetWindowPos(e.hwnd, after, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        after = e.hwnd;
+        if (e.showCmd == SW_MAXIMIZE)
+            ShowWindow(e.hwnd, SW_MAXIMIZE);
+        else if (e.showCmd == SW_MINIMIZE)
+            ShowWindow(e.hwnd, SW_MINIMIZE);
     }
 
     // 快照中没有匹配到的窗口 → 最小化
@@ -288,6 +310,7 @@ void RestoreSnapshot(int num) {
 }
 
 // ---- 切换数字（保存旧快照 + 恢复新快照）----
+// 切换前先枚举当前窗口状态并保存到旧槽位，再从新槽位恢复
 void UpdateTrayIcon();  // 前置声明
 void SwitchToNumber(int newNum) {
     if (newNum < 0 || newNum > 9 || newNum == g_trayNumber) return;
@@ -511,7 +534,8 @@ BOOL CreateMessageWindow(HINSTANCE hInstance) {
     return g_hWnd != NULL;
 }
 
-// ---- 主函数 ----
+// Makefile 中需加 -static 静态链接 libstdc++/libgcc，避免 clock_gettime64 符号缺失
+// g++ -static -mwindows -DRELEASE -O2 -s -o ww.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
 int main() {
     SetProcessDPIAware();  // 修复高 DPI 模糊
 #ifndef RELEASE
@@ -526,7 +550,7 @@ int main() {
     EnumWindows(EnumWindowCallback, 0);
     LOG("共 %d 个窗口\n", (int)g_windows.size());
 
-    // 初始快照保存到数字 1
+    // 初始快照保存到数字 1（默认从 1 开始，g_trayNumber 初始化为 1）
     SaveSnapshot(1, g_windows);
 
     // 托盘 + 热键
