@@ -43,7 +43,7 @@ struct Snapshot {
 static std::vector<WinInfo> g_windows;
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
-static int g_trayNumber = 0;      // 托盘显示的数字 0-9
+static int g_trayNumber = 1;      // 托盘显示的数字 0-9
 static BOOL g_trayAdded = FALSE;  // 是否已 NIM_ADD
 static std::array<Snapshot, 10> g_snapshots;  // 每个数字的快照
 static HWND g_hWnd = NULL;
@@ -225,7 +225,7 @@ void RestoreSnapshot(int num) {
 
                 // 先恢复状态（非最小化/最大化则用 SW_RESTORE）
                 UINT cmd = sw.showCmd;
-                if (cmd == SW_SHOWNORMAL) cmd = SW_RESTORE;
+                if (cmd == SW_SHOWNORMAL) cmd = SW_SHOWNOACTIVATE;
                 LOG("[恢复]      ShowWindow(cmd=%u)\n", cmd);
                 ShowWindow(hwnd, cmd);
 
@@ -500,8 +500,8 @@ int main() {
     EnumWindows(EnumWindowCallback, 0);
     LOG("共 %d 个窗口\n", (int)g_windows.size());
 
-    // 初始快照保存到数字 0
-    SaveSnapshot(0, g_windows);
+    // 初始快照保存到数字 1
+    SaveSnapshot(1, g_windows);
 
     // 托盘 + 热键
     if (!CreateMessageWindow(g_hInst)) {
