@@ -245,13 +245,14 @@ void RestoreSnapshot(int num) {
         }
     }
 
-    // 按 zOrder 升序（后→前），依次堆叠
+    // 按 zOrder 升序（后→前）：先处理普通窗口的位置/Z轴，最大化/最小化只调 ShowWindow
     std::sort(restored.begin(), restored.end(),
               [](const MatchEntry& a, const MatchEntry& b) {
                   return a.zOrder < b.zOrder;
               });
     HWND after = HWND_BOTTOM;
     for (const auto& e : restored) {
+        if (e.showCmd == SW_MAXIMIZE || e.showCmd == SW_MINIMIZE) continue;
         int w = e.rect.right - e.rect.left;
         int h = e.rect.bottom - e.rect.top;
         LOG("[恢复]   SetWindowPos(hwnd=0x%p, z=%u) (%ld,%ld, %dx%d)\n",
@@ -261,10 +262,11 @@ void RestoreSnapshot(int num) {
         after = e.hwnd;
     }
 
-    // 位置就位后切换状态
+    // 切换状态：最大化/最小化窗口直接 ShowWindow，普通窗口用 SW_RESTORE
     for (const auto& e : restored) {
         UINT cmd = e.showCmd;
         if (cmd == SW_SHOWNORMAL) cmd = SW_RESTORE;
+        LOG("[恢复]   ShowWindow(hwnd=0x%p, cmd=%u)\n", e.hwnd, cmd);
         ShowWindow(e.hwnd, cmd);
     }
 
