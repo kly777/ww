@@ -24,36 +24,23 @@
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 #endif
 
-// ---- 窗口信息结构体 ----
-struct WindowInfo {
-    HWND hwnd;
-    UINT zOrder;
-    std::string title;
-    std::string className;
-    std::string processPath;
-    UINT showCmd;  // SW_SHOWNORMAL / SW_MINIMIZE / SW_MAXIMIZE
-    BOOL isVisible, isEnabled, isIconic, isZoomed, isActive;
-    RECT windowRect, clientRect;
-    BOOL onCurrentDesktop;
-    GUID desktopId;
-};
-
-// ---- 快照结构体 ----
-struct SnapWindow {
+// ---- 窗口 / 快照结构体 ----
+struct WinInfo {
     std::string title;
     std::string className;
     std::string processPath;
     RECT rect;
-    UINT showCmd;
+    UINT showCmd;  // SW_SHOWNORMAL / SW_MINIMIZE / SW_MAXIMIZE
+    UINT zOrder;
 };
 
 struct Snapshot {
     BOOL hasData = FALSE;
-    std::vector<SnapWindow> windows;
+    std::vector<WinInfo> windows;
 };
 
 // ---- 全局 ----
-static std::vector<WindowInfo> g_windows;
+static std::vector<WinInfo> g_windows;
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 static int g_trayNumber = 0;      // 托盘显示的数字 0-9
@@ -69,16 +56,6 @@ std::string WideToUtf8(const wchar_t* src) {
     std::string result(len - 1, '\0');  // len includes null terminator
     WideCharToMultiByte(CP_UTF8, 0, src, -1, &result[0], len, NULL, NULL);
     return result;
-}
-
-std::string GuidToString(const GUID& guid) {
-    wchar_t* wstr = NULL;
-    if (SUCCEEDED(StringFromCLSID(guid, &wstr)) && wstr) {
-        std::string result = WideToUtf8(wstr);
-        CoTaskMemFree(wstr);
-        return result;
-    }
-    return "未知";
 }
 
 BOOL InitVirtualDesktopManager() {
@@ -98,9 +75,8 @@ void CleanupVirtualDesktopManager() {
     CoUninitialize();
 }
 
-// ---- 填充 WindowInfo ----
-void FillWindowInfo(WindowInfo& w, HWND hwnd) {
-    w.hwnd = hwnd;
+// ---- 填充 WinInfo ----
+void FillWindowInfo(WinInfo& w, HWND hwnd) {
     w.zOrder = g_zOrderCounter++;
 
     wchar_t wTitle[256], wClass[256];
@@ -109,22 +85,22 @@ void FillWindowInfo(WindowInfo& w, HWND hwnd) {
     w.title = WideToUtf8(wTitle);
     w.className = WideToUtf8(wClass);
 
-    w.isVisible = IsWindowVisible(hwnd);
-    w.isEnabled = IsWindowEnabled(hwnd);
-    w.isIconic = IsIconic(hwnd);
-    w.isZoomed = IsZoomed(hwnd);
-    w.isActive = (GetForegroundWindow() == hwnd);
-
-    // showCmd
-    if (w.isIconic)
+    BOOL iconic = IsIconic(hwnd);
+    BOOL zoomed = IsZoomed(hwnd);
+    if (iconic)
         w.showCmd = SW_MINIMIZE;
-    else if (w.isZoomed)
+    else if (zoomed)
         w.showCmd = SW_MAXIMIZE;
     else
         w.showCmd = SW_SHOWNORMAL;
 
-    GetWindowRect(hwnd, &w.windowRect);
-    GetClientRect(hwnd, &w.clientRect);
+    GetWindowRect(hwnd, &w.rect);
+    LOG("[枚举] \"%s\" iconic=%d zoomed=%d rect=(%ld,%ld,%ld,%ld) %dx%d\n",
+        w.title.c_str(), iconic, zoomed,
+        w.rect.left, w.rect.top, w.rect.right,
+        w.rect.bottom,
+        w.rect.right - w.rect.left,
+        w.rect.bottom - w.rect.top);
 
     // 进程路径（用于快照匹配）
     DWORD pid;
@@ -136,12 +112,6 @@ void FillWindowInfo(WindowInfo& w, HWND hwnd) {
         if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
             w.processPath = WideToUtf8(pp);
         CloseHandle(hp);
-    }
-
-    if (g_pDesktopManager) {
-        g_pDesktopManager->IsWindowOnCurrentVirtualDesktop(hwnd,
-                                                           &w.onCurrentDesktop);
-        g_pDesktopManager->GetWindowDesktopId(hwnd, &w.desktopId);
     }
 }
 
@@ -158,58 +128,26 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
             return TRUE;
     }
     if (g_windows.size() >= MAX_WINDOWS) return TRUE;
-    WindowInfo wi;
+    WinInfo wi;
     FillWindowInfo(wi, hwnd);
     g_windows.push_back(wi);
     return TRUE;
 }
 
-// ---- 输出 ----
-void PrintWindowInfo(const WindowInfo& w) {
-    LOG("==================== 窗口详细信息 ====================\n");
-    LOG("窗口句柄: 0x%p\n", w.hwnd);
-    LOG("Z-Order:  %u\n", w.zOrder);
-    LOG("窗口标题: %s\n", w.title.c_str());
-    LOG("窗口类名: %s\n", w.className.c_str());
-
-    LOG("--- 虚拟桌面 ---\n");
-    LOG("在当前虚拟桌面: %s\n", w.onCurrentDesktop ? "是" : "否");
-    std::string guidStr = GuidToString(w.desktopId);
-    LOG("所在桌面: %s\n", guidStr.c_str());
-
-    LOG("--- 窗口状态 ---\n");
-    LOG("可见: %s\n", w.isVisible ? "是" : "否");
-    LOG("可用: %s\n", w.isEnabled ? "是" : "否");
-    LOG("最小化: %s\n", w.isIconic ? "是" : "否");
-    LOG("最大化: %s\n", w.isZoomed ? "是" : "否");
-    LOG("前台窗口: %s\n", w.isActive ? "是" : "否");
-
-    LOG("--- 位置和大小 ---\n");
-    LOG("位置: (%ld, %ld) - (%ld, %ld)\n", w.windowRect.left, w.windowRect.top,
-        w.windowRect.right, w.windowRect.bottom);
-    LOG("大小: %ld x %ld\n", w.windowRect.right - w.windowRect.left,
-        w.windowRect.bottom - w.windowRect.top);
-    LOG("客户区大小: %ld x %ld\n", w.clientRect.right - w.clientRect.left,
-        w.clientRect.bottom - w.clientRect.top);
-    LOG("==================== 结束 ====================\n\n");
-}
-
 // ---- 快照：保存/恢复窗口状态 ----
-void SaveSnapshot(int num, const std::vector<WindowInfo>& windows) {
+void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
-    int count = (int)windows.size();
-    snap.windows.resize(count);
-    for (int i = 0; i < count; i++) {
-        SnapWindow& sw = snap.windows[i];
-        sw.title = windows[i].title;
-        sw.className = windows[i].className;
-        sw.processPath = windows[i].processPath;
-        sw.rect = windows[i].windowRect;
-        sw.showCmd = windows[i].showCmd;
-    }
+    snap.windows = windows;
     snap.hasData = TRUE;
     LOG("[快照] 保存 %d 个窗口到数字 %d\n", (int)snap.windows.size(), num);
+    for (size_t i = 0; i < windows.size(); i++) {
+        const auto& w = windows[i];
+        LOG("[保存] [%zu] \"%s\" showCmd=%u rect=(%ld,%ld,%ld,%ld) %dx%d\n",
+            i, w.title.c_str(), w.showCmd, w.rect.left, w.rect.top,
+            w.rect.right, w.rect.bottom,
+            w.rect.right - w.rect.left, w.rect.bottom - w.rect.top);
+    }
 }
 
 // ---- 快照恢复时用的临时结构 ----
@@ -261,27 +199,50 @@ void RestoreSnapshot(int num) {
     std::vector<CurWin> curWindows;
     curWindows.reserve(MAX_WINDOWS);
     EnumWindows(CollectCurWindows, (LPARAM)&curWindows);
+    LOG("[恢复] 当前可见窗口 %d 个\n", (int)curWindows.size());
 
     std::vector<bool> matched(curWindows.size(), false);
 
     // 匹配并恢复
     for (size_t i = 0; i < snap.windows.size(); i++) {
-        SnapWindow& sw = snap.windows[i];
+        WinInfo& sw = snap.windows[i];
+        LOG("[恢复] 快照[%zu]: \"%s\" showCmd=%u rect=(%ld,%ld,%ld,%ld)\n",
+            i, sw.title.c_str(), sw.showCmd, sw.rect.left, sw.rect.top,
+            sw.rect.right, sw.rect.bottom);
         for (size_t j = 0; j < curWindows.size(); j++) {
             if (sw.title == curWindows[j].title &&
                 sw.className == curWindows[j].className &&
                 sw.processPath == curWindows[j].processPath) {
                 HWND hwnd = curWindows[j].hwnd;
+                LOG("[恢复]   -> 匹配到 \"%s\" hwnd=0x%p\n",
+                    curWindows[j].title.c_str(), hwnd);
+
+                // 记录当前状态
+                RECT curRect;
+                GetWindowRect(hwnd, &curRect);
+                LOG("[恢复]      当前 rect=(%ld,%ld,%ld,%ld)\n",
+                    curRect.left, curRect.top, curRect.right, curRect.bottom);
+
                 // 先恢复状态（非最小化/最大化则用 SW_RESTORE）
                 UINT cmd = sw.showCmd;
                 if (cmd == SW_SHOWNORMAL) cmd = SW_RESTORE;
+                LOG("[恢复]      ShowWindow(cmd=%u)\n", cmd);
                 ShowWindow(hwnd, cmd);
 
                 // 恢复到保存的位置和大小
                 int w = sw.rect.right - sw.rect.left;
                 int h = sw.rect.bottom - sw.rect.top;
+                LOG("[恢复]      SetWindowPos(%ld,%ld, %dx%d)\n",
+                    sw.rect.left, sw.rect.top, w, h);
                 SetWindowPos(hwnd, NULL, sw.rect.left, sw.rect.top, w, h,
                              SWP_NOZORDER | SWP_NOACTIVATE);
+
+                RECT afterRect;
+                GetWindowRect(hwnd, &afterRect);
+                LOG("[恢复]      结果 rect=(%ld,%ld,%ld,%ld)\n",
+                    afterRect.left, afterRect.top, afterRect.right,
+                    afterRect.bottom);
+
                 matched[j] = true;
                 break;
             }
@@ -291,9 +252,13 @@ void RestoreSnapshot(int num) {
     // 快照中没有匹配到的窗口 → 最小化
     for (size_t j = 0; j < curWindows.size(); j++) {
         if (!matched[j]) {
+            LOG("[恢复] 最小化未匹配: \"%s\" hwnd=0x%p\n",
+                curWindows[j].title.c_str(), curWindows[j].hwnd);
             ShowWindow(curWindows[j].hwnd, SW_MINIMIZE);
         }
     }
+
+    LOG("[恢复] 完成\n");
 }
 
 // ---- 切换数字（保存旧快照 + 恢复新快照）----
@@ -532,12 +497,8 @@ int main() {
     InitVirtualDesktopManager();
 
     // 枚举窗口
-    LOG("开始枚举所有窗口...\n\n");
     EnumWindows(EnumWindowCallback, 0);
-    LOG("共 %d 个窗口\n\n", (int)g_windows.size());
-    for (size_t i = 0; i < g_windows.size(); i++) {
-        PrintWindowInfo(g_windows[i]);
-    }
+    LOG("共 %d 个窗口\n", (int)g_windows.size());
 
     // 初始快照保存到数字 0
     SaveSnapshot(0, g_windows);
