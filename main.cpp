@@ -348,6 +348,7 @@ BOOL CreateMessageWindow(HINSTANCE hInstance) {
 
 // ---- 主函数 ----
 int main() {
+    SetProcessDPIAware();  // 修复高 DPI 模糊
     SetConsoleOutputCP(CP_UTF8);
     g_hInst = GetModuleHandle(NULL);
 
