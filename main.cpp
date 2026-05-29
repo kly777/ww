@@ -124,15 +124,13 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
     }
 }
 
-// ---- 枚举回调 ----
-// 只收集可见、有标题、非桌面、在当前虚拟桌面的顶层窗口
-BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
+// ---- 窗口过滤（保存和恢复共用）----
+BOOL ShouldSkipWindow(HWND hwnd) {
     if (!IsWindowVisible(hwnd)) return TRUE;
     wchar_t title[256], wclass[256];
     GetWindowTextW(hwnd, title, 256);
     if (wcslen(title) == 0) return TRUE;
     GetClassNameW(hwnd, wclass, 256);
-    // 跳过 Program Manager（桌面）
     if (_wcsicmp(wclass, L"Progman") == 0) return TRUE;
     if (g_pDesktopManager) {
         GUID desktopId;
@@ -140,6 +138,12 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
             IsEqualGUID(desktopId, GUID_NULL))
             return TRUE;
     }
+    return FALSE;
+}
+
+// ---- 枚举回调（保存快照用）----
+BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
+    if (ShouldSkipWindow(hwnd)) return TRUE;
     if (g_windows.size() >= MAX_WINDOWS) return TRUE;
     WinInfo wi;
     FillWindowInfo(wi, hwnd);
@@ -172,27 +176,16 @@ struct CurWin {
     std::string processPath;
 };
 
-// CollectCurWindows: 恢复时枚举当前窗口，过滤规则与 EnumWindowCallback 一致
-// 避免抓入 Program Manager、其他虚拟桌面等不应处理的窗口
+// CollectCurWindows: 恢复时枚举当前窗口，与 EnumWindowCallback 共用 ShouldSkipWindow
 BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
     auto* wins = (std::vector<CurWin>*)lParam;
-    if (!IsWindowVisible(hwnd)) return TRUE;
-    wchar_t wt[256], wc[256];
-    GetWindowTextW(hwnd, wt, 256);
-    if (wcslen(wt) == 0) return TRUE;
-    GetClassNameW(hwnd, wc, 256);
-    // 跳过 Program Manager（桌面）
-    if (_wcsicmp(wc, L"Progman") == 0) return TRUE;
-    // 跳过不在当前虚拟桌面的窗口
-    if (g_pDesktopManager) {
-        GUID desktopId;
-        if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId)) ||
-            IsEqualGUID(desktopId, GUID_NULL))
-            return TRUE;
-    }
+    if (ShouldSkipWindow(hwnd)) return TRUE;
     if (wins->size() >= MAX_WINDOWS) return TRUE;
 
     CurWin cw;
+    wchar_t wt[256], wc[256];
+    GetWindowTextW(hwnd, wt, 256);
+    GetClassNameW(hwnd, wc, 256);
     cw.title = WideToUtf8(wt);
     cw.className = WideToUtf8(wc);
 
