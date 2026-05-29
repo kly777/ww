@@ -13,12 +13,12 @@
 #include <string>
 #include <vector>
 
-#define MAX_WINDOWS 256
-#define WM_TRAYICON (WM_APP + 1)
-#define WM_INIT_TRAY (WM_APP + 2)  // 延迟初始化托盘
-#define ID_TRAYICON 1
-#define ID_HOTKEY_BASE 100
-#define IDM_AUTOSTART 1001
+constexpr int kMaxWindows = 256;
+constexpr UINT WM_TRAYICON = WM_APP + 1;
+constexpr UINT WM_INIT_TRAY = WM_APP + 2;  // 延迟初始化托盘
+constexpr UINT kIdTrayIcon = 1;
+constexpr int kIdHotkeyBase = 100;
+constexpr int kIdmAutostart = 1001;
 
 #ifdef RELEASE
 #define LOG(fmt, ...) ((void)0)
@@ -159,7 +159,7 @@ BOOL ShouldSkipWindow(HWND hwnd) {
 // ---- 枚举回调（保存快照用）----
 BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     if (ShouldSkipWindow(hwnd)) return TRUE;
-    if (g_windows.size() >= MAX_WINDOWS) return TRUE;
+    if (g_windows.size() >= kMaxWindows) return TRUE;
     WinInfo wi;
     FillWindowInfo(wi, hwnd);
     g_windows.push_back(wi);
@@ -195,7 +195,7 @@ struct CurWin {
 BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
     auto* wins = (std::vector<CurWin>*)lParam;
     if (ShouldSkipWindow(hwnd)) return TRUE;
-    if (wins->size() >= MAX_WINDOWS) return TRUE;
+    if (wins->size() >= kMaxWindows) return TRUE;
 
     CurWin cw;
     auto tc = GetWindowTitleAndClass(hwnd);
@@ -218,7 +218,7 @@ void RestoreSnapshot(int num) {
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)snap.windows.size());
 
     std::vector<CurWin> curWindows;
-    curWindows.reserve(MAX_WINDOWS);
+    curWindows.reserve(kMaxWindows);
     EnumWindows(CollectCurWindows, (LPARAM)&curWindows);
     LOG("[恢复] 当前可见窗口 %d 个\n", (int)curWindows.size());
 
@@ -424,7 +424,7 @@ void UpdateTrayIcon() {
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
     nid.hWnd = g_hWnd;
-    nid.uID = ID_TRAYICON;
+    nid.uID = kIdTrayIcon;
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
 
@@ -448,14 +448,14 @@ void UpdateTrayIcon() {
 void RegisterHotkeys(HWND hwnd) {
     // Ctrl+0 ~ Ctrl+9
     for (int i = 0; i <= 9; i++) {
-        RegisterHotKey(hwnd, ID_HOTKEY_BASE + i, MOD_CONTROL | MOD_NOREPEAT,
+        RegisterHotKey(hwnd, kIdHotkeyBase + i, MOD_CONTROL | MOD_NOREPEAT,
                        '0' + i);
     }
 }
 
 void UnregisterHotkeys(HWND hwnd) {
     for (int i = 0; i <= 9; i++) {
-        UnregisterHotKey(hwnd, ID_HOTKEY_BASE + i);
+        UnregisterHotKey(hwnd, kIdHotkeyBase + i);
     }
 }
 
@@ -511,14 +511,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             NOTIFYICONDATAW nid = {};
             nid.cbSize = sizeof(nid);
             nid.hWnd = hwnd;
-            nid.uID = ID_TRAYICON;
+            nid.uID = kIdTrayIcon;
             Shell_NotifyIconW(NIM_DELETE, &nid);
             PostQuitMessage(0);
             return 0;
         }
 
         case WM_HOTKEY: {
-            int key = (int)wParam - ID_HOTKEY_BASE;
+            int key = (int)wParam - kIdHotkeyBase;
             if (key >= 0 && key <= 9) SwitchToNumber(key);
             return 0;
         }
@@ -529,7 +529,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 HMENU hMenu = CreatePopupMenu();
                 // AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
                 AppendMenuW(hMenu, MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : 0),
-                            IDM_AUTOSTART, L"开机启动");
+                            kIdmAutostart, L"开机启动");
                 AppendMenuW(hMenu, MF_STRING, 1000, L"退出");
 
                 POINT pt;
@@ -539,7 +539,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                          pt.x, pt.y, 0, hwnd, NULL);
                 DestroyMenu(hMenu);
 
-                if (cmd == IDM_AUTOSTART) {
+                if (cmd == kIdmAutostart) {
                     SetAutoStart(!IsAutoStartEnabled());
                 } else if (cmd == 1000) {
                     DestroyWindow(hwnd);
