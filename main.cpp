@@ -17,8 +17,8 @@ constexpr int kMaxWindows = 256;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_INIT_TRAY = WM_APP + 2;  // 延迟初始化托盘
 constexpr UINT kIdTrayIcon = 1;
-constexpr int kIdHotkeyBase = 100;
-constexpr int kIdmAutostart = 1001;
+enum class HotkeyId : int { Base = 100 };
+enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 
 #ifdef RELEASE
 #define LOG(fmt, ...) ((void)0)
@@ -448,14 +448,14 @@ void UpdateTrayIcon() {
 void RegisterHotkeys(HWND hwnd) {
     // Ctrl+0 ~ Ctrl+9
     for (int i = 0; i <= 9; i++) {
-        RegisterHotKey(hwnd, kIdHotkeyBase + i, MOD_CONTROL | MOD_NOREPEAT,
+        RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i, MOD_CONTROL | MOD_NOREPEAT,
                        '0' + i);
     }
 }
 
 void UnregisterHotkeys(HWND hwnd) {
     for (int i = 0; i <= 9; i++) {
-        UnregisterHotKey(hwnd, kIdHotkeyBase + i);
+        UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i);
     }
 }
 
@@ -518,7 +518,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_HOTKEY: {
-            int key = (int)wParam - kIdHotkeyBase;
+            int key = (int)wParam - static_cast<int>(HotkeyId::Base);
             if (key >= 0 && key <= 9) SwitchToNumber(key);
             return 0;
         }
@@ -529,8 +529,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 HMENU hMenu = CreatePopupMenu();
                 // AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
                 AppendMenuW(hMenu, MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : 0),
-                            kIdmAutostart, L"开机启动");
-                AppendMenuW(hMenu, MF_STRING, 1000, L"退出");
+                            (UINT_PTR)MenuId::AutoStart, L"开机启动");
+                AppendMenuW(hMenu, MF_STRING, (UINT_PTR)MenuId::Exit, L"退出");
 
                 POINT pt;
                 GetCursorPos(&pt);
@@ -539,9 +539,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                          pt.x, pt.y, 0, hwnd, NULL);
                 DestroyMenu(hMenu);
 
-                if (cmd == kIdmAutostart) {
+                if (cmd == (int)MenuId::AutoStart) {
                     SetAutoStart(!IsAutoStartEnabled());
-                } else if (cmd == 1000) {
+                } else if (cmd == (int)MenuId::Exit) {
                     DestroyWindow(hwnd);
                 }
             }
