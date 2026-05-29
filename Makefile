@@ -3,7 +3,7 @@
 ww_dev.exe: main.cpp
 	g++ -static -o ww_dev.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
 
-release: main.cpp
+ww.exe: main.cpp
 	g++ -static -mwindows -DRELEASE -O3 -s -o ww.exe main.cpp -lole32 -luuid -lshell32 -lgdi32
 
 clean:
@@ -11,6 +11,9 @@ clean:
 
 dev: ww_dev.exe
 	./ww_dev.exe
+
+release: ww.exe
+	./ww.exe
 
 fmt:
 	clang-format -i main.cpp

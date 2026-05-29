@@ -47,8 +47,8 @@ struct Snapshot {
 static std::vector<WinInfo> g_windows;  // 用 vector 替代原始数组，自动管理内存
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
-static int g_trayNumber = 1;      // 托盘显示的数字 0-9
-static BOOL g_trayAdded = FALSE;  // 是否已 NIM_ADD
+static int g_trayNumber = 1;                  // 托盘显示的数字 0-9
+static BOOL g_trayAdded = FALSE;              // 是否已 NIM_ADD
 static std::array<Snapshot, 10> g_snapshots;  // 每个数字的快照
 static HWND g_hWnd = NULL;
 static HINSTANCE g_hInst = NULL;
@@ -89,8 +89,7 @@ std::string GetProcessPath(HWND hwnd) {
     wchar_t pp[MAX_PATH];
     DWORD sz = MAX_PATH;
     std::string path;
-    if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
-        path = WideToUtf8(pp);
+    if (QueryFullProcessImageNameW(hp, 0, pp, &sz)) path = WideToUtf8(pp);
     CloseHandle(hp);
     return path;
 }
@@ -129,12 +128,9 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
     WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
     GetWindowPlacement(hwnd, &wp);
     w.rect = wp.rcNormalPosition;
-    LOG("[枚举] \"%s\" iconic=%d zoomed=%d rect=(%ld,%ld,%ld,%ld) %dx%d\n",
-        w.title.c_str(), iconic, zoomed,
-        w.rect.left, w.rect.top, w.rect.right,
-        w.rect.bottom,
-        w.rect.right - w.rect.left,
-        w.rect.bottom - w.rect.top);
+    LOG("[枚举] \"%s\" iconic=%d zoomed=%d rect=(%ld,%ld,%ld,%ld) %ldx%ld\n",
+        w.title.c_str(), iconic, zoomed, w.rect.left, w.rect.top, w.rect.right,
+        w.rect.bottom, w.rect.right - w.rect.left, w.rect.bottom - w.rect.top);
 
     w.processPath = GetProcessPath(hwnd);
 }
@@ -176,10 +172,10 @@ void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
     LOG("[快照] 保存 %d 个窗口到数字 %d\n", (int)snap.windows.size(), num);
     for (size_t i = 0; i < windows.size(); i++) {
         const auto& w = windows[i];
-        LOG("[保存] [%zu] \"%s\" showCmd=%u rect=(%ld,%ld,%ld,%ld) %dx%d\n",
+        LOG("[保存] [%zu] \"%s\" showCmd=%u rect=(%ld,%ld,%ld,%ld) %ldx%ld\n",
             i, w.title.c_str(), w.showCmd, w.rect.left, w.rect.top,
-            w.rect.right, w.rect.bottom,
-            w.rect.right - w.rect.left, w.rect.bottom - w.rect.top);
+            w.rect.right, w.rect.bottom, w.rect.right - w.rect.left,
+            w.rect.bottom - w.rect.top);
     }
 }
 
@@ -191,7 +187,8 @@ struct CurWin {
     std::string processPath;
 };
 
-// CollectCurWindows: 恢复时枚举当前窗口，与 EnumWindowCallback 共用 ShouldSkipWindow
+// CollectCurWindows: 恢复时枚举当前窗口，与 EnumWindowCallback 共用
+// ShouldSkipWindow
 BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
     auto* wins = (std::vector<CurWin>*)lParam;
     if (ShouldSkipWindow(hwnd)) return TRUE;
@@ -240,7 +237,8 @@ void RestoreSnapshot(int num) {
 
     for (size_t i = 0; i < snap.windows.size(); i++) {
         WinInfo& sw = snap.windows[i];
-        LOG("[恢复] 快照[%zu]: \"%s\" zOrder=%u showCmd=%u rect=(%ld,%ld,%ld,%ld)\n",
+        LOG("[恢复] 快照[%zu]: \"%s\" zOrder=%u showCmd=%u "
+            "rect=(%ld,%ld,%ld,%ld)\n",
             i, sw.title.c_str(), sw.zOrder, sw.showCmd, sw.rect.left,
             sw.rect.top, sw.rect.right, sw.rect.bottom);
         for (size_t j = 0; j < curWindows.size(); j++) {
@@ -275,7 +273,8 @@ void RestoreSnapshot(int num) {
                 } else if (e.showCmd == SW_MAXIMIZE) {
                     flags |= SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
                 } else {
-                    x = e.rect.left; y = e.rect.top;
+                    x = e.rect.left;
+                    y = e.rect.top;
                     w = e.rect.right - e.rect.left;
                     h = e.rect.bottom - e.rect.top;
                     flags |= SWP_SHOWWINDOW;
@@ -448,8 +447,8 @@ void UpdateTrayIcon() {
 void RegisterHotkeys(HWND hwnd) {
     // Ctrl+0 ~ Ctrl+9
     for (int i = 0; i <= 9; i++) {
-        RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i, MOD_CONTROL | MOD_NOREPEAT,
-                       '0' + i);
+        RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i,
+                       MOD_CONTROL | MOD_NOREPEAT, '0' + i);
     }
 }
 
@@ -463,14 +462,14 @@ void UnregisterHotkeys(HWND hwnd) {
 BOOL IsAutoStartEnabled() {
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                      0, KEY_READ, &hKey) != ERROR_SUCCESS)
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
+                      KEY_READ, &hKey) != ERROR_SUCCESS)
         return FALSE;
     wchar_t path[MAX_PATH];
     DWORD size = sizeof(path);
     DWORD type;
-    LSTATUS ret = RegQueryValueExW(hKey, L"WW", NULL, &type, (BYTE*)path,
-                                   &size);
+    LSTATUS ret =
+        RegQueryValueExW(hKey, L"WW", NULL, &type, (BYTE*)path, &size);
     RegCloseKey(hKey);
     return ret == ERROR_SUCCESS;
 }
@@ -478,8 +477,8 @@ BOOL IsAutoStartEnabled() {
 void SetAutoStart(BOOL enable) {
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                      0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS)
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
+                      KEY_SET_VALUE, &hKey) != ERROR_SUCCESS)
         return;
     if (enable) {
         wchar_t path[MAX_PATH];
@@ -528,7 +527,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // 右键菜单
                 HMENU hMenu = CreatePopupMenu();
                 // AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-                AppendMenuW(hMenu, MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : 0),
+                AppendMenuW(hMenu,
+                            MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : 0),
                             (UINT_PTR)MenuId::AutoStart, L"开机启动");
                 AppendMenuW(hMenu, MF_STRING, (UINT_PTR)MenuId::Exit, L"退出");
 
@@ -565,7 +565,6 @@ BOOL CreateMessageWindow(HINSTANCE hInstance) {
                              NULL, hInstance, NULL);
     return g_hWnd != NULL;
 }
-
 
 int main() {
     SetProcessDPIAware();  // 修复高 DPI 模糊
