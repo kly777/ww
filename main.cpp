@@ -21,10 +21,27 @@ struct WindowInfo {
     UINT zOrder;
     char title[256];
     char className[256];
+    char processPath[512];
+    UINT showCmd;   // SW_SHOWNORMAL / SW_MINIMIZE / SW_MAXIMIZE
     BOOL isVisible, isEnabled, isIconic, isZoomed, isActive;
     RECT windowRect, clientRect;
     BOOL onCurrentDesktop;
     GUID desktopId;
+};
+
+// ---- 快照结构体 ----
+struct SnapWindow {
+    char title[256];
+    char className[256];
+    char processPath[512];
+    RECT rect;
+    UINT showCmd;
+};
+
+struct Snapshot {
+    BOOL hasData;
+    SnapWindow windows[MAX_WINDOWS];
+    int count;
 };
 
 // ---- 全局 ----
@@ -34,6 +51,7 @@ static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 static int g_trayNumber = 0;      // 托盘显示的数字 0-9
 static BOOL g_trayAdded = FALSE;  // 是否已 NIM_ADD
+static Snapshot g_snapshots[10];  // 每个数字的快照
 static HWND g_hWnd = NULL;
 static HINSTANCE g_hInst = NULL;
 
@@ -83,8 +101,25 @@ void FillWindowInfo(WindowInfo& w, HWND hwnd) {
     w.isZoomed  = IsZoomed(hwnd);
     w.isActive  = (GetForegroundWindow() == hwnd);
 
+    // showCmd
+    if (w.isIconic)      w.showCmd = SW_MINIMIZE;
+    else if (w.isZoomed) w.showCmd = SW_MAXIMIZE;
+    else                 w.showCmd = SW_SHOWNORMAL;
+
     GetWindowRect(hwnd, &w.windowRect);
     GetClientRect(hwnd, &w.clientRect);
+
+    // 进程路径（用于快照匹配）
+    DWORD pid;
+    GetWindowThreadProcessId(hwnd, &pid);
+    HANDLE hp = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (hp) {
+        wchar_t pp[MAX_PATH];
+        DWORD sz = MAX_PATH;
+        if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
+            WideToUtf8(pp, w.processPath, sizeof(w.processPath));
+        CloseHandle(hp);
+    }
 
     if (g_pDesktopManager) {
         g_pDesktopManager->IsWindowOnCurrentVirtualDesktop(hwnd, &w.onCurrentDesktop);
@@ -141,6 +176,130 @@ void PrintWindowInfo(const WindowInfo& w) {
            w.clientRect.right - w.clientRect.left,
            w.clientRect.bottom - w.clientRect.top);
     printf("==================== 结束 ====================\n\n");
+}
+
+// ---- 快照：保存/恢复窗口状态 ----
+void SaveSnapshot(int num, const WindowInfo* windows, int count) {
+    if (num < 0 || num > 9) return;
+    Snapshot& snap = g_snapshots[num];
+    snap.count = count < MAX_WINDOWS ? count : MAX_WINDOWS;
+    for (int i = 0; i < snap.count; i++) {
+        SnapWindow& sw = snap.windows[i];
+        strncpy(sw.title, windows[i].title, 255);
+        strncpy(sw.className, windows[i].className, 255);
+        strncpy(sw.processPath, windows[i].processPath, 511);
+        sw.rect = windows[i].windowRect;
+        sw.showCmd = windows[i].showCmd;
+    }
+    snap.hasData = TRUE;
+    printf("[快照] 保存 %d 个窗口到数字 %d\n", snap.count, num);
+}
+
+// ---- 快照恢复时用的临时结构 ----
+struct CurWin {
+    HWND hwnd;
+    char title[256];
+    char className[256];
+    char processPath[512];
+};
+
+struct CurWinCtx {
+    CurWin* wins;
+    int count;
+    int max;
+};
+
+BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
+    CurWinCtx* ctx = (CurWinCtx*)lParam;
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    wchar_t wt[256], wc[256];
+    GetWindowTextW(hwnd, wt, 256);
+    if (wcslen(wt) == 0) return TRUE;
+    GetClassNameW(hwnd, wc, 256);
+    if (ctx->count >= ctx->max) return TRUE;
+
+    CurWin& cw = ctx->wins[ctx->count];
+    WideCharToMultiByte(CP_UTF8, 0, wt, -1, cw.title, 256, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, wc, -1, cw.className, 256, NULL, NULL);
+
+    DWORD pid;
+    GetWindowThreadProcessId(hwnd, &pid);
+    HANDLE hp = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (hp) {
+        wchar_t pp[MAX_PATH];
+        DWORD sz = MAX_PATH;
+        if (QueryFullProcessImageNameW(hp, 0, pp, &sz))
+            WideCharToMultiByte(CP_UTF8, 0, pp, -1, cw.processPath, 512, NULL, NULL);
+        CloseHandle(hp);
+    }
+    cw.hwnd = hwnd;
+    ctx->count++;
+    return TRUE;
+}
+
+void RestoreSnapshot(int num) {
+    if (num < 0 || num > 9) return;
+    Snapshot& snap = g_snapshots[num];
+    if (!snap.hasData) {
+        printf("[快照] 数字 %d 无快照，跳过恢复\n", num);
+        return;
+    }
+
+    printf("[快照] 从数字 %d 恢复 %d 个窗口\n", num, snap.count);
+
+    CurWin curWindows[MAX_WINDOWS];
+    int curCount = 0;
+    CurWinCtx ctx = { curWindows, 0, MAX_WINDOWS };
+    EnumWindows(CollectCurWindows, (LPARAM)&ctx);
+    curCount = ctx.count;
+
+    // 匹配并恢复
+    for (int i = 0; i < snap.count; i++) {
+        SnapWindow& sw = snap.windows[i];
+        for (int j = 0; j < curCount; j++) {
+            if (strcmp(sw.title, curWindows[j].title) == 0 &&
+                strcmp(sw.className, curWindows[j].className) == 0 &&
+                strcmp(sw.processPath, curWindows[j].processPath) == 0) {
+
+                HWND hwnd = curWindows[j].hwnd;
+                // 先恢复状态（非最小化/最大化则用 SW_RESTORE）
+                UINT cmd = sw.showCmd;
+                if (cmd == SW_SHOWNORMAL) cmd = SW_RESTORE;
+                ShowWindow(hwnd, cmd);
+
+                // 恢复到保存的位置和大小
+                int w = sw.rect.right - sw.rect.left;
+                int h = sw.rect.bottom - sw.rect.top;
+                SetWindowPos(hwnd, NULL, sw.rect.left, sw.rect.top, w, h,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+                break;
+            }
+        }
+    }
+}
+
+// ---- 切换数字（保存旧快照 + 恢复新快照）----
+void UpdateTrayIcon();  // 前置声明
+void SwitchToNumber(int newNum) {
+    if (newNum < 0 || newNum > 9 || newNum == g_trayNumber) return;
+
+    // 先重新枚举当前窗口状态
+    g_windowCount = 0;
+    g_zOrderCounter = 0;
+    EnumWindows(EnumWindowCallback, 0);
+
+    // 保存当前状态到旧数字的快照
+    SaveSnapshot(g_trayNumber, g_windows, g_windowCount);
+
+    // 切换到新数字
+    int oldNum = g_trayNumber;
+    g_trayNumber = newNum;
+
+    // 恢复新数字的快照
+    RestoreSnapshot(newNum);
+
+    UpdateTrayIcon();
+    printf("[切换] %d -> %d\n", oldNum, newNum);
 }
 
 // ---- 动态生成带数字的托盘图标 ----
@@ -290,11 +449,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_HOTKEY: {
         int key = (int)wParam - ID_HOTKEY_BASE;
-        if (key >= 0 && key <= 9) {
-            g_trayNumber = key;
-            UpdateTrayIcon();
-            printf("[热键] Ctrl+%d -> 托盘数字切换为 %d\n", key, key);
-        }
+        if (key >= 0 && key <= 9) SwitchToNumber(key);
         return 0;
     }
 
@@ -320,9 +475,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (cmd == 1000) {
                 DestroyWindow(hwnd);
             } else if (cmd >= ID_HOTKEY_BASE && cmd <= ID_HOTKEY_BASE + 9) {
-                g_trayNumber = cmd - ID_HOTKEY_BASE;
-                UpdateTrayIcon();
-                printf("[菜单] 托盘数字切换为 %d\n", g_trayNumber);
+                SwitchToNumber(cmd - ID_HOTKEY_BASE);
             }
         }
         return 0;
@@ -362,6 +515,9 @@ int main() {
     for (int i = 0; i < g_windowCount; i++) {
         PrintWindowInfo(g_windows[i]);
     }
+
+    // 初始快照保存到数字 0
+    SaveSnapshot(0, g_windows, g_windowCount);
 
     // 托盘 + 热键
     if (!CreateMessageWindow(g_hInst)) {
