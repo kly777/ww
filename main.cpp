@@ -186,9 +186,8 @@ struct CurWin {
     std::string processPath;
 };
 
-// CollectCurWindows: 恢复时枚举当前窗口，与 EnumWindowCallback 共用
-// ShouldSkipWindow
-BOOL CALLBACK CollectCurWindows(HWND hwnd, LPARAM lParam) {
+// EnumCurWindows: 恢复时枚举当前窗口，与 EnumWindowCallback 共用 ShouldSkipWindow
+BOOL CALLBACK EnumCurWindows(HWND hwnd, LPARAM lParam) {
     auto* wins = (std::vector<CurWin>*)lParam;
     if (ShouldSkipWindow(hwnd)) return TRUE;
     if (wins->size() >= kMaxWindows) return TRUE;
@@ -215,7 +214,7 @@ void RestoreSnapshot(int num) {
 
     std::vector<CurWin> curWindows;
     curWindows.reserve(kMaxWindows);
-    EnumWindows(CollectCurWindows, (LPARAM)&curWindows);
+    EnumWindows(EnumCurWindows, (LPARAM)&curWindows);
     LOG("[恢复] 当前可见窗口 %d 个\n", (int)curWindows.size());
 
     std::vector<bool> matched(curWindows.size(), false);
@@ -312,12 +311,12 @@ void RestoreSnapshot(int num) {
 // ---- 切换数字（保存旧快照 + 恢复新快照）----
 // 切换前先枚举当前窗口状态并保存到旧槽位，再从新槽位恢复
 void UpdateTrayIcon();  // 前置声明
-void SwitchToNumber(int newNum) {
-    if (newNum < 0 || newNum > 9) return;
+void SwitchWorkspace(int slot) {
+    if (slot < 0 || slot > 9) return;
     // 再次按同一数字 → 回到上一个 snapshot
-    if (newNum == g_trayNumber) {
-        newNum = g_prevTrayNumber;
-        if (newNum == g_trayNumber) return;
+    if (slot == g_trayNumber) {
+        slot = g_prevTrayNumber;
+        if (slot == g_trayNumber) return;
     }
 
     // 先重新枚举当前窗口状态
@@ -330,17 +329,17 @@ void SwitchToNumber(int newNum) {
 
     // 切换到新数字
     g_prevTrayNumber = g_trayNumber;
-    g_trayNumber = newNum;
+    g_trayNumber = slot;
 
     // 恢复新数字的快照
-    RestoreSnapshot(newNum);
+    RestoreSnapshot(slot);
 
     UpdateTrayIcon();
-    LOG("[切换] %d -> %d\n", g_prevTrayNumber, newNum);
+    LOG("[切换] %d -> %d\n", g_prevTrayNumber, slot);
 }
 
-// ---- 动态生成带数字的托盘图标 ----
-HICON CreateNumberIcon(int number) {
+// ---- 动态生成托盘图标 ----
+HICON MakeTrayIcon(int number) {
     int w = 32, h = 32;
 
     HDC hdc = GetDC(NULL);
@@ -445,13 +444,13 @@ void UpdateTrayIcon() {
 
     if (!g_trayAdded) {
         nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
-        nid.hIcon = CreateNumberIcon(g_trayNumber);
+        nid.hIcon = MakeTrayIcon(g_trayNumber);
         swprintf(nid.szTip, 128, L"数字: %d", g_trayNumber);
         Shell_NotifyIconW(NIM_ADD, &nid);
         if (nid.hIcon) DestroyIcon(nid.hIcon);
         g_trayAdded = TRUE;
     } else {
-        nid.hIcon = CreateNumberIcon(g_trayNumber);
+        nid.hIcon = MakeTrayIcon(g_trayNumber);
         swprintf(nid.szTip, 128, L"数字: %d", g_trayNumber);
         if (!Shell_NotifyIconW(NIM_MODIFY, &nid))
             LOG("[!] NIM_MODIFY 失败: %lu\n", GetLastError());
@@ -534,7 +533,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_HOTKEY: {
             int key = (int)wParam - static_cast<int>(HotkeyId::Base);
-            if (key >= 0 && key <= 9) SwitchToNumber(key);
+            if (key >= 0 && key <= 9) SwitchWorkspace(key);
             return 0;
         }
 
