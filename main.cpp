@@ -257,8 +257,7 @@ void RestoreSnapshot(int num) {
                   return a.zOrder < b.zOrder;
               });
 
-    // 用 DeferWindowPos 一次原子操作完成所有窗口的位置、大小、显示、Z 轴设置
-    // 避免 SetWindowPlacement + SetWindowPos 两次重绘导致的闪烁
+    // 第二步：DeferWindowPos 一次性设位置、大小、Z 轴，盖掉 ShowWindow 造成的 Z 序变动
     if (!restored.empty()) {
         HDWP hdwp = BeginDeferWindowPos((int)restored.size());
         if (hdwp) {
@@ -266,34 +265,25 @@ void RestoreSnapshot(int num) {
             for (const auto& e : restored) {
                 UINT flags = SWP_NOACTIVATE;
                 int x = 0, y = 0, w = 0, h = 0;
-                if (e.showCmd == SW_MINIMIZE) {
-                    flags |= SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW;
-                } else if (e.showCmd == SW_MAXIMIZE) {
-                    flags |= SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
+                if (e.showCmd == SW_MAXIMIZE || e.showCmd == SW_MINIMIZE) {
+                    flags |= SWP_NOMOVE | SWP_NOSIZE;
                 } else {
-                    x = e.rect.left;
-                    y = e.rect.top;
+                    x = e.rect.left; y = e.rect.top;
                     w = e.rect.right - e.rect.left;
                     h = e.rect.bottom - e.rect.top;
-                    flags |= SWP_SHOWWINDOW;
                 }
+                if (e.showCmd == SW_MAXIMIZE)
+                    ShowWindow(e.hwnd, SW_MAXIMIZE);
+                else if (e.showCmd == SW_MINIMIZE)
+                    ShowWindow(e.hwnd, SW_MINIMIZE);
+                else
+                    ShowWindow(e.hwnd, SW_RESTORE);
                 hdwp = DeferWindowPos(hdwp, e.hwnd, after, x, y, w, h, flags);
                 if (!hdwp) break;
                 after = e.hwnd;
             }
             if (hdwp) EndDeferWindowPos(hdwp);
         }
-    }
-
-    // DeferWindowPos 无法最大化/最小化/还原，单独调用 ShowWindow
-    // SWP_SHOWWINDOW 对已最小化窗口无效（只显示不展开），必须 SW_RESTORE 还原
-    for (const auto& e : restored) {
-        if (e.showCmd == SW_MAXIMIZE)
-            ShowWindow(e.hwnd, SW_MAXIMIZE);
-        else if (e.showCmd == SW_MINIMIZE)
-            ShowWindow(e.hwnd, SW_MINIMIZE);
-        else
-            ShowWindow(e.hwnd, SW_RESTORE);
     }
 
     // 快照中没有匹配到的窗口 → 最小化
