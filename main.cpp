@@ -494,6 +494,13 @@ BOOL CreateMessageWindow(HINSTANCE hInstance) {
 }
 
 int main() {
+    // 单实例保护
+    HANDLE hMutex = CreateMutexW(NULL, FALSE, L"WW_SingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        LOG("已有实例在运行，退出\n");
+        return 0;
+    }
+
     SetProcessDPIAware();  // 修复高 DPI 模糊
 #ifndef RELEASE
     SetConsoleOutputCP(CP_UTF8);
