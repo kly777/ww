@@ -361,9 +361,21 @@ HICON CreateNumberIcon(int number) {
 
     HBITMAP hOld = (HBITMAP)SelectObject(memDC, hBmpColor);
 
-    // 蓝色背景
+    // 每个数字不同背景色
+    static const COLORREF kColors[] = {
+        RGB(180, 50, 50),   // 0 红
+        RGB(30, 100, 210),  // 1 蓝
+        RGB(40, 150, 70),   // 2 绿
+        RGB(200, 140, 20),  // 3 橙
+        RGB(130, 60, 180),  // 4 紫
+        RGB(20, 150, 150),  // 5 青
+        RGB(200, 80, 140),  // 6 粉
+        RGB(80, 80, 80),    // 7 灰
+        RGB(30, 140, 210),  // 8 天蓝
+        RGB(180, 160, 30),  // 9 金
+    };
     RECT rc = {0, 0, w, h};
-    HBRUSH hBrBg = CreateSolidBrush(RGB(30, 100, 210));
+    HBRUSH hBrBg = CreateSolidBrush(kColors[number]);
     FillRect(memDC, &rc, hBrBg);
     DeleteObject(hBrBg);
 
