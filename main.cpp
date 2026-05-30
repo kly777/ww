@@ -27,7 +27,8 @@ enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 #endif
 
 // ---- 窗口 / 快照 ----
-// WinInfo 存 hwnd，一次运行期间不变，恢复时直接按句柄定位，无需标题/类名/路径匹配
+// WinInfo 存
+// hwnd，一次运行期间不变，恢复时直接按句柄定位，无需标题/类名/路径匹配
 struct WinInfo {
     HWND hwnd;
     std::string title;  // 仅用于日志
@@ -45,7 +46,7 @@ struct Snapshot {
 static std::vector<WinInfo> g_windows;
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
-static int g_trayNumber = 1;                  // 托盘显示的数字 0-9
+static int g_trayNumber = 1;  // 托盘显示的数字 0-9
 
 static std::array<Snapshot, 10> g_snapshots;  // 每个数字的快照
 static HWND g_hWnd = NULL;
@@ -172,10 +173,9 @@ void RestoreSnapshot(int num) {
 
     // 最小化当前窗口中不属于目标快照的窗口
     for (const auto& w : g_windows) {
-        auto it = std::find_if(wins.begin(), wins.end(),
-                               [&](const WinInfo& sw) {
-                                   return sw.hwnd == w.hwnd;
-                               });
+        auto it =
+            std::find_if(wins.begin(), wins.end(),
+                         [&](const WinInfo& sw) { return sw.hwnd == w.hwnd; });
         if (it == wins.end()) {
             ShowWindow(w.hwnd, SW_MINIMIZE);
         }
@@ -193,10 +193,9 @@ void RestoreSnapshot(int num) {
     }
 
     // Step 2: 按 zOrder 恢复 Z 序（一次批处理，抑制逐个重绘）
-    std::sort(wins.begin(), wins.end(),
-              [](const WinInfo& a, const WinInfo& b) {
-                  return a.zOrder < b.zOrder;
-              });
+    std::sort(wins.begin(), wins.end(), [](const WinInfo& a, const WinInfo& b) {
+        return a.zOrder < b.zOrder;
+    });
 
     if (!wins.empty()) {
         HDWP hdwp = BeginDeferWindowPos((int)wins.size());
@@ -204,8 +203,8 @@ void RestoreSnapshot(int num) {
             HWND after = HWND_BOTTOM;
             for (const auto& w : wins) {
                 if (!IsWindow(w.hwnd)) continue;
-                UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                           | SWP_NOREDRAW | SWP_NOCOPYBITS;
+                UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                             SWP_NOREDRAW | SWP_NOCOPYBITS;
                 hdwp = DeferWindowPos(hdwp, w.hwnd, after, 0, 0, 0, 0, flags);
                 if (!hdwp) break;
                 after = w.hwnd;
@@ -355,7 +354,6 @@ HICON MakeTrayIcon(int number) {
 static BOOL g_trayAdded = FALSE;  // 是否已 NIM_ADD
 // ---- 更新托盘图标 ----
 void UpdateTrayIcon() {
-
     NOTIFYICONDATAW nid = {};
     nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
     nid.hWnd = g_hWnd;
