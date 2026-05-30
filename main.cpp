@@ -159,6 +159,18 @@ void RestoreSnapshot(int num) {
         return;
     }
 
+    // 最小化当前窗口中不属于目标快照的窗口
+    for (const auto& w : g_windows) {
+        auto it = std::find_if(snap.windows.begin(),
+                               snap.windows.end(),
+                               [&](const WinInfo& sw) {
+                                   return sw.hwnd == w.hwnd;
+                               });
+        if (it == snap.windows.end()) {
+            ShowWindow(w.hwnd, SW_MINIMIZE);
+        }
+    }
+
     auto& wins = snap.windows;
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
 
@@ -174,11 +186,9 @@ void RestoreSnapshot(int num) {
     }
 
     // 第二步: 按 zOrder 恢复 Z 序
-    // EnumWindows 从上到下枚举, zOrder 0 = 最前, zOrder N = 最后
-    // 要恢复原始 Z 序, 需按 zOrder 降序排列, 从最底层往上堆
     std::sort(wins.begin(), wins.end(),
               [](const WinInfo& a, const WinInfo& b) {
-                  return a.zOrder < b.zOrder;  // 降序: 最后面的窗口最先处理
+                  return a.zOrder < b.zOrder;
               });
 
     if (!wins.empty()) {
