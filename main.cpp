@@ -374,8 +374,10 @@ void UpdateTrayIcon() {
 void RegisterHotkeys(HWND hwnd) {
     // Ctrl+0 ~ Ctrl+9
     for (int i = 0; i <= 9; i++) {
-        RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i,
-                       MOD_CONTROL | MOD_NOREPEAT, '0' + i);
+        if (!RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i,
+                            MOD_CONTROL | MOD_NOREPEAT, '0' + i)) {
+            LOG("[!] 注册热键 Ctrl+%d 失败 (错误码: %lu)\n", i, GetLastError());
+        }
     }
 }
 
