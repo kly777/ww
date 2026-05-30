@@ -436,6 +436,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_INIT_TRAY: {
+            // 延迟枚举：此时消息循环已启动，托盘已就绪
+            EnumWindows(EnumWindowCallback, 0);
+            LOG("共 %d 个窗口\n", (int)g_windows.size());
             UpdateTrayIcon();
             return 0;
         }
@@ -517,10 +520,6 @@ int main() {
 
     // COM 初始化
     InitVirtualDesktopManager();
-
-    // 枚举窗口
-    EnumWindows(EnumWindowCallback, 0);
-    LOG("共 %d 个窗口\n", (int)g_windows.size());
 
     // 托盘 + 热键
     if (!CreateMessageWindow(g_hInst)) {
