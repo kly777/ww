@@ -159,33 +159,41 @@ void RestoreSnapshot(int num) {
         return;
     }
 
-    // 最小化当前窗口中不属于目标快照的窗口
-    for (const auto& w : g_windows) {
-        auto it = std::find_if(snap.windows.begin(),
-                               snap.windows.end(),
-                               [&](const WinInfo& sw) {
-                                   return sw.hwnd == w.hwnd;
-                               });
-        if (it == snap.windows.end()) {
-            ShowWindow(w.hwnd, SW_MINIMIZE);
-        }
+    // 临时禁用窗口最小化/还原动画
+    ANIMATIONINFO ai = {sizeof(ANIMATIONINFO)};
+    BOOL hadAnimation = SystemParametersInfo(SPI_GETANIMATION, sizeof(ai), &ai, 0)
+                        && ai.iMinAnimate;
+    if (hadAnimation) {
+        ai.iMinAnimate = 0;
+        SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
     }
 
     auto& wins = snap.windows;
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
 
-    // 第一步: 恢复窗口状态(位置+最小化/最大化/还原), 避免 ShowWindow
-    //         即时生效打乱 Z 序, 统一用 SetWindowPlacement 原子操作
+    // 最小化当前窗口中不属于目标快照的窗口
+    for (const auto& w : g_windows) {
+        auto it = std::find_if(wins.begin(), wins.end(),
+                               [&](const WinInfo& sw) {
+                                   return sw.hwnd == w.hwnd;
+                               });
+        if (it == wins.end()) {
+            ShowWindow(w.hwnd, SW_MINIMIZE);
+        }
+    }
+
+    // Step 1: 恢复目标窗口的状态和位置
+    // SetWindowPlacement 原子设置 showCmd + rcNormalPosition，
+    // 能正确处理最小化→还原的过渡
     for (const auto& w : wins) {
         if (!IsWindow(w.hwnd)) continue;
         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
         wp.showCmd = w.showCmd;
         wp.rcNormalPosition = w.rect;
-        // ptMinPosition / ptMaxPosition 置零，由系统自己计算
         SetWindowPlacement(w.hwnd, &wp);
     }
 
-    // 第二步: 按 zOrder 恢复 Z 序
+    // Step 2: 按 zOrder 恢复 Z 序（一次批处理，抑制逐个重绘）
     std::sort(wins.begin(), wins.end(),
               [](const WinInfo& a, const WinInfo& b) {
                   return a.zOrder < b.zOrder;
@@ -197,14 +205,20 @@ void RestoreSnapshot(int num) {
             HWND after = HWND_BOTTOM;
             for (const auto& w : wins) {
                 if (!IsWindow(w.hwnd)) continue;
-                // 位置和状态已由 SetWindowPlacement 设置, 这里只修 Z 序
-                UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+                UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                           | SWP_NOREDRAW | SWP_NOCOPYBITS;
                 hdwp = DeferWindowPos(hdwp, w.hwnd, after, 0, 0, 0, 0, flags);
                 if (!hdwp) break;
                 after = w.hwnd;
             }
             if (hdwp) EndDeferWindowPos(hdwp);
         }
+    }
+
+    // 恢复动画
+    if (hadAnimation) {
+        ai.iMinAnimate = 1;
+        SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
     }
 
     LOG("[恢复] 完成\n");
