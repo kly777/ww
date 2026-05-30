@@ -162,10 +162,23 @@ void RestoreSnapshot(int num) {
     auto& wins = snap.windows;
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
 
-    // 按 zOrder 排序
+    // 第一步: 恢复窗口状态(位置+最小化/最大化/还原), 避免 ShowWindow
+    //         即时生效打乱 Z 序, 统一用 SetWindowPlacement 原子操作
+    for (const auto& w : wins) {
+        if (!IsWindow(w.hwnd)) continue;
+        WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
+        wp.showCmd = w.showCmd;
+        wp.rcNormalPosition = w.rect;
+        // ptMinPosition / ptMaxPosition 置零，由系统自己计算
+        SetWindowPlacement(w.hwnd, &wp);
+    }
+
+    // 第二步: 按 zOrder 恢复 Z 序
+    // EnumWindows 从上到下枚举, zOrder 0 = 最前, zOrder N = 最后
+    // 要恢复原始 Z 序, 需按 zOrder 降序排列, 从最底层往上堆
     std::sort(wins.begin(), wins.end(),
               [](const WinInfo& a, const WinInfo& b) {
-                  return a.zOrder < b.zOrder;
+                  return a.zOrder < b.zOrder;  // 降序: 最后面的窗口最先处理
               });
 
     if (!wins.empty()) {
@@ -174,22 +187,9 @@ void RestoreSnapshot(int num) {
             HWND after = HWND_BOTTOM;
             for (const auto& w : wins) {
                 if (!IsWindow(w.hwnd)) continue;
-                UINT flags = SWP_NOACTIVATE;
-                int x = 0, y = 0, cw = 0, ch = 0;
-                if (w.showCmd == SW_MAXIMIZE || w.showCmd == SW_MINIMIZE) {
-                    flags |= SWP_NOMOVE | SWP_NOSIZE;
-                } else {
-                    x = w.rect.left; y = w.rect.top;
-                    cw = w.rect.right - w.rect.left;
-                    ch = w.rect.bottom - w.rect.top;
-                }
-                if (w.showCmd == SW_MAXIMIZE)
-                    ShowWindow(w.hwnd, SW_MAXIMIZE);
-                else if (w.showCmd == SW_MINIMIZE)
-                    ShowWindow(w.hwnd, SW_MINIMIZE);
-                else
-                    ShowWindow(w.hwnd, SW_RESTORE);
-                hdwp = DeferWindowPos(hdwp, w.hwnd, after, x, y, cw, ch, flags);
+                // 位置和状态已由 SetWindowPlacement 设置, 这里只修 Z 序
+                UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+                hdwp = DeferWindowPos(hdwp, w.hwnd, after, 0, 0, 0, 0, flags);
                 if (!hdwp) break;
                 after = w.hwnd;
             }
