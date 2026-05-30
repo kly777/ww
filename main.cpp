@@ -17,7 +17,7 @@ constexpr int kMaxWindows = 256;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_INIT_TRAY = WM_APP + 2;  // 延迟初始化托盘
 constexpr UINT kIdTrayIcon = 1;
-enum class HotkeyId : int { Base = 100 };
+enum class HotkeyId : int { Base = 0 };
 enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 
 #ifdef RELEASE
@@ -310,8 +310,8 @@ void RestoreSnapshot(int num) {
 
 // ---- 切换数字（保存旧快照 + 恢复新快照）----
 // 切换前先枚举当前窗口状态并保存到旧槽位，再从新槽位恢复
-void UpdateTrayIcon();  // 前置声明
-void SwitchWorkspace(int slot) {
+void UpdateTrayIcon();
+void SwitchSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
     // 再次按同一数字 → 回到上一个 snapshot
     if (slot == g_trayNumber) {
@@ -445,13 +445,13 @@ void UpdateTrayIcon() {
     if (!g_trayAdded) {
         nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
         nid.hIcon = MakeTrayIcon(g_trayNumber);
-        swprintf(nid.szTip, 128, L"数字: %d", g_trayNumber);
+        swprintf(nid.szTip, 128, L"ww-%d", g_trayNumber);
         Shell_NotifyIconW(NIM_ADD, &nid);
         if (nid.hIcon) DestroyIcon(nid.hIcon);
         g_trayAdded = TRUE;
     } else {
         nid.hIcon = MakeTrayIcon(g_trayNumber);
-        swprintf(nid.szTip, 128, L"数字: %d", g_trayNumber);
+        swprintf(nid.szTip, 128, L"ww-%d", g_trayNumber);
         if (!Shell_NotifyIconW(NIM_MODIFY, &nid))
             LOG("[!] NIM_MODIFY 失败: %lu\n", GetLastError());
         if (nid.hIcon) DestroyIcon(nid.hIcon);
@@ -533,7 +533,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_HOTKEY: {
             int key = (int)wParam - static_cast<int>(HotkeyId::Base);
-            if (key >= 0 && key <= 9) SwitchWorkspace(key);
+            if (key >= 0 && key <= 9) SwitchSnapshot(key);
             return 0;
         }
 
@@ -594,9 +594,6 @@ int main() {
     // 枚举窗口
     EnumWindows(EnumWindowCallback, 0);
     LOG("共 %d 个窗口\n", (int)g_windows.size());
-
-    // 初始快照保存到数字 1（默认从 1 开始，g_trayNumber 初始化为 1）
-    SaveSnapshot(1, g_windows);
 
     // 托盘 + 热键
     if (!CreateMessageWindow(g_hInst)) {
