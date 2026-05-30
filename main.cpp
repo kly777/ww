@@ -161,9 +161,10 @@ void RestoreSnapshot(int num) {
 
     // 临时禁用窗口最小化/还原动画
     ANIMATIONINFO ai = {sizeof(ANIMATIONINFO)};
-    BOOL hadAnimation = SystemParametersInfo(SPI_GETANIMATION, sizeof(ai), &ai, 0)
-                        && ai.iMinAnimate;
-    if (hadAnimation) {
+    BOOL origAnimate = FALSE;
+    if (SystemParametersInfo(SPI_GETANIMATION, sizeof(ai), &ai, 0))
+        origAnimate = ai.iMinAnimate;
+    if (origAnimate) {
         ai.iMinAnimate = 0;
         SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
     }
@@ -216,8 +217,8 @@ void RestoreSnapshot(int num) {
     }
 
     // 恢复动画
-    if (hadAnimation) {
-        ai.iMinAnimate = 1;
+    if (origAnimate) {
+        ai.iMinAnimate = origAnimate;
         SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
     }
 
