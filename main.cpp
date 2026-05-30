@@ -26,11 +26,11 @@ enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 #endif
 
-// ---- 窗口 ----
+// ---- 窗口 / 快照 ----
+// WinInfo 存 hwnd，一次运行期间不变，恢复时直接按句柄定位，无需标题/类名/路径匹配
 struct WinInfo {
-    std::string title;
-    std::string className;
-    std::string processPath;
+    HWND hwnd;
+    std::string title;  // 仅用于日志
     RECT rect;
     UINT showCmd;  // SW_SHOWNORMAL / SW_MINIMIZE / SW_MAXIMIZE
     UINT zOrder;
@@ -42,7 +42,7 @@ struct Snapshot {
 };
 
 // ---- 全局 ----
-static std::vector<WinInfo> g_windows;  // 用 vector 替代原始数组，自动管理内存
+static std::vector<WinInfo> g_windows;
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 static int g_trayNumber = 1;                  // 托盘显示的数字 0-9
@@ -53,7 +53,6 @@ static HWND g_hWnd = NULL;
 static HINSTANCE g_hInst = NULL;
 
 // ---- 工具函数 ----
-// 原来的 WideToUtf8 写入 char* 缓冲区，改为返回 std::string，避免缓冲区溢出风险
 std::string WideToUtf8(const wchar_t* src) {
     int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, NULL, 0, NULL, NULL);
     if (len <= 0) return {};
@@ -79,38 +78,14 @@ void CleanupVirtualDesktopManager() {
     CoUninitialize();
 }
 
-// 获取窗口所属进程的路径
-std::string GetProcessPath(HWND hwnd) {
-    DWORD pid;
-    GetWindowThreadProcessId(hwnd, &pid);
-    HANDLE hp = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (!hp) return {};
-    wchar_t pp[MAX_PATH];
-    DWORD sz = MAX_PATH;
-    std::string path;
-    if (QueryFullProcessImageNameW(hp, 0, pp, &sz)) path = WideToUtf8(pp);
-    CloseHandle(hp);
-    return path;
-}
-
-struct TitleClass {
-    std::string title;
-    std::string className;
-};
-TitleClass GetWindowTitleAndClass(HWND hwnd) {
-    wchar_t wt[256], wc[256];
-    GetWindowTextW(hwnd, wt, 256);
-    GetClassNameW(hwnd, wc, 256);
-    return {WideToUtf8(wt), WideToUtf8(wc)};
-}
-
-// ---- 填充 WinInfo ----
+// ---- 捕捉窗口状态 ----
 void FillWindowInfo(WinInfo& w, HWND hwnd) {
+    w.hwnd = hwnd;
     w.zOrder = g_zOrderCounter++;
 
-    auto tc = GetWindowTitleAndClass(hwnd);
-    w.title = tc.title;
-    w.className = tc.className;
+    wchar_t wt[256];
+    GetWindowTextW(hwnd, wt, 256);
+    w.title = WideToUtf8(wt);
 
     BOOL iconic = IsIconic(hwnd);
     BOOL zoomed = IsZoomed(hwnd);
@@ -130,11 +105,9 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
     LOG("[枚举] \"%s\" iconic=%d zoomed=%d rect=(%ld,%ld,%ld,%ld) %ldx%ld\n",
         w.title.c_str(), iconic, zoomed, w.rect.left, w.rect.top, w.rect.right,
         w.rect.bottom, w.rect.right - w.rect.left, w.rect.bottom - w.rect.top);
-
-    w.processPath = GetProcessPath(hwnd);
 }
 
-// ---- 窗口过滤（保存和恢复共用）----
+// ---- 窗口过滤 ----
 BOOL ShouldSkipWindow(HWND hwnd) {
     if (!IsWindowVisible(hwnd)) return TRUE;
     wchar_t title[256], wclass[256];
@@ -151,7 +124,7 @@ BOOL ShouldSkipWindow(HWND hwnd) {
     return FALSE;
 }
 
-// ---- 枚举回调（保存快照用）----
+// ---- 枚举回调 ----
 BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     if (ShouldSkipWindow(hwnd)) return TRUE;
     if (g_windows.size() >= kMaxWindows) return TRUE;
@@ -161,8 +134,7 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     return TRUE;
 }
 
-// ---- 快照：保存/恢复窗口状态 ----
-// 保存时直接拷贝 g_windows 向量（WinInfo 已含所有必要字段）
+// ---- 保存快照 ----
 void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
@@ -178,30 +150,7 @@ void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
     }
 }
 
-// ---- 快照恢复时用的临时结构 ----
-struct CurWin {
-    HWND hwnd;
-    std::string title;
-    std::string className;
-    std::string processPath;
-};
-
-// EnumCurWindows: 恢复时枚举当前窗口，与 EnumWindowCallback 共用 ShouldSkipWindow
-BOOL CALLBACK EnumCurWindows(HWND hwnd, LPARAM lParam) {
-    auto* wins = (std::vector<CurWin>*)lParam;
-    if (ShouldSkipWindow(hwnd)) return TRUE;
-    if (wins->size() >= kMaxWindows) return TRUE;
-
-    CurWin cw;
-    auto tc = GetWindowTitleAndClass(hwnd);
-    cw.title = tc.title;
-    cw.className = tc.className;
-    cw.processPath = GetProcessPath(hwnd);
-    cw.hwnd = hwnd;
-    wins->push_back(cw);
-    return TRUE;
-}
-
+// ---- 恢复快照 ----
 void RestoreSnapshot(int num) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
@@ -210,96 +159,48 @@ void RestoreSnapshot(int num) {
         return;
     }
 
-    LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)snap.windows.size());
+    auto& wins = snap.windows;
+    LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
 
-    std::vector<CurWin> curWindows;
-    curWindows.reserve(kMaxWindows);
-    EnumWindows(EnumCurWindows, (LPARAM)&curWindows);
-    LOG("[恢复] 当前可见窗口 %d 个\n", (int)curWindows.size());
-
-    std::vector<bool> matched(curWindows.size(), false);
-
-    // 收集匹配窗口，按 zOrder 排序后批量恢复位置/Z轴
-    struct MatchEntry {
-        HWND hwnd;
-        UINT zOrder;
-        RECT rect;
-        UINT showCmd;
-    };
-    std::vector<MatchEntry> restored;
-
-    auto IsSameWindow = [](const WinInfo& snap, const CurWin& cur) {
-        return snap.title == cur.title && snap.className == cur.className &&
-               snap.processPath == cur.processPath;
-    };
-
-    for (size_t i = 0; i < snap.windows.size(); i++) {
-        WinInfo& sw = snap.windows[i];
-        LOG("[恢复] 快照[%zu]: \"%s\" zOrder=%u showCmd=%u "
-            "rect=(%ld,%ld,%ld,%ld)\n",
-            i, sw.title.c_str(), sw.zOrder, sw.showCmd, sw.rect.left,
-            sw.rect.top, sw.rect.right, sw.rect.bottom);
-        for (size_t j = 0; j < curWindows.size(); j++) {
-            if (IsSameWindow(sw, curWindows[j])) {
-                matched[j] = true;
-                restored.push_back(
-                    {curWindows[j].hwnd, sw.zOrder, sw.rect, sw.showCmd});
-                break;
-            }
-        }
-    }
-
-    // zOrder 排序说明：
-    // EnumWindows 从上到下（前台→后台）枚举，zOrder 小=前台，大=后台
-    // 升序排列后从 HWND_BOTTOM 逐层堆叠：小 zOrder（前台）最后放 → 留在顶层
-    std::sort(restored.begin(), restored.end(),
-              [](const MatchEntry& a, const MatchEntry& b) {
+    // 按 zOrder 排序
+    std::sort(wins.begin(), wins.end(),
+              [](const WinInfo& a, const WinInfo& b) {
                   return a.zOrder < b.zOrder;
               });
 
-    // 第二步：DeferWindowPos 一次性设位置、大小、Z 轴，盖掉 ShowWindow 造成的 Z 序变动
-    if (!restored.empty()) {
-        HDWP hdwp = BeginDeferWindowPos((int)restored.size());
+    if (!wins.empty()) {
+        HDWP hdwp = BeginDeferWindowPos((int)wins.size());
         if (hdwp) {
             HWND after = HWND_BOTTOM;
-            for (const auto& e : restored) {
+            for (const auto& w : wins) {
+                if (!IsWindow(w.hwnd)) continue;
                 UINT flags = SWP_NOACTIVATE;
-                int x = 0, y = 0, w = 0, h = 0;
-                if (e.showCmd == SW_MAXIMIZE || e.showCmd == SW_MINIMIZE) {
+                int x = 0, y = 0, cw = 0, ch = 0;
+                if (w.showCmd == SW_MAXIMIZE || w.showCmd == SW_MINIMIZE) {
                     flags |= SWP_NOMOVE | SWP_NOSIZE;
                 } else {
-                    x = e.rect.left; y = e.rect.top;
-                    w = e.rect.right - e.rect.left;
-                    h = e.rect.bottom - e.rect.top;
+                    x = w.rect.left; y = w.rect.top;
+                    cw = w.rect.right - w.rect.left;
+                    ch = w.rect.bottom - w.rect.top;
                 }
-                if (e.showCmd == SW_MAXIMIZE)
-                    ShowWindow(e.hwnd, SW_MAXIMIZE);
-                else if (e.showCmd == SW_MINIMIZE)
-                    ShowWindow(e.hwnd, SW_MINIMIZE);
+                if (w.showCmd == SW_MAXIMIZE)
+                    ShowWindow(w.hwnd, SW_MAXIMIZE);
+                else if (w.showCmd == SW_MINIMIZE)
+                    ShowWindow(w.hwnd, SW_MINIMIZE);
                 else
-                    ShowWindow(e.hwnd, SW_RESTORE);
-                hdwp = DeferWindowPos(hdwp, e.hwnd, after, x, y, w, h, flags);
+                    ShowWindow(w.hwnd, SW_RESTORE);
+                hdwp = DeferWindowPos(hdwp, w.hwnd, after, x, y, cw, ch, flags);
                 if (!hdwp) break;
-                after = e.hwnd;
+                after = w.hwnd;
             }
             if (hdwp) EndDeferWindowPos(hdwp);
-        }
-    }
-
-    // 快照中没有匹配到的窗口 → 最小化
-    for (size_t j = 0; j < curWindows.size(); j++) {
-        if (!matched[j]) {
-            LOG("[恢复] 最小化未匹配: \"%s\" hwnd=0x%p\n",
-                curWindows[j].title.c_str(), curWindows[j].hwnd);
-            ShowWindow(curWindows[j].hwnd, SW_MINIMIZE);
         }
     }
 
     LOG("[恢复] 完成\n");
 }
 
-// ---- 切换数字（保存旧快照 + 恢复新快照）----
-// 切换前先枚举当前窗口状态并保存到旧槽位，再从新槽位恢复
+// ---- 切换工作区 ----
 void UpdateTrayIcon();
 void SwitchSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
@@ -350,7 +251,6 @@ HICON MakeTrayIcon(int number) {
 
     HBITMAP hOld = (HBITMAP)SelectObject(memDC, hBmpColor);
 
-    // 每个数字不同背景色
     static const COLORREF kColors[] = {
         RGB(180, 50, 50),   // 0 红
         RGB(30, 100, 210),  // 1 蓝
@@ -379,7 +279,6 @@ HICON MakeTrayIcon(int number) {
     SelectObject(memDC, hBrOld);
     DeleteObject(hPn);
 
-    // 白色数字
     SetBkMode(memDC, TRANSPARENT);
     SetTextColor(memDC, RGB(255, 255, 255));
     wchar_t num[2] = {(wchar_t)(L'0' + number), 0};
@@ -397,7 +296,6 @@ HICON MakeTrayIcon(int number) {
     DeleteObject(hFont);
     SelectObject(memDC, hOld);
 
-    // 设置 alpha 通道为 255 (不透明)
     if (bits) {
         for (int i = 0; i < w * h; i++) ((BYTE*)bits)[i * 4 + 3] = 0xFF;
     }
