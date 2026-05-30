@@ -46,11 +46,9 @@ static std::vector<WinInfo> g_windows;
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 static int g_trayNumber = 1;                  // 托盘显示的数字 0-9
-static int g_prevTrayNumber = 0;              // 上一个数字，Ctrl+N 再按时切回
-static BOOL g_trayAdded = FALSE;              // 是否已 NIM_ADD
+
 static std::array<Snapshot, 10> g_snapshots;  // 每个数字的快照
 static HWND g_hWnd = NULL;
-static HINSTANCE g_hInst = NULL;
 
 // ---- 工具函数 ----
 std::string WideToUtf8(const wchar_t* src) {
@@ -227,8 +225,10 @@ void RestoreSnapshot(int num) {
 
 // ---- 切换工作区 ----
 void UpdateTrayIcon();
+static int g_prevTrayNumber = 0;  // 上一个数字，Ctrl+N 再按时切回
 void SwitchSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
+
     // 再次按同一数字 → 回到上一个 snapshot
     if (slot == g_trayNumber) {
         slot = g_prevTrayNumber;
@@ -352,8 +352,10 @@ HICON MakeTrayIcon(int number) {
     return hIcon;
 }
 
+static BOOL g_trayAdded = FALSE;  // 是否已 NIM_ADD
 // ---- 更新托盘图标 ----
 void UpdateTrayIcon() {
+
     NOTIFYICONDATAW nid = {};
     nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
     nid.hWnd = g_hWnd;
@@ -516,13 +518,13 @@ int main() {
 #ifndef RELEASE
     SetConsoleOutputCP(CP_UTF8);
 #endif
-    g_hInst = GetModuleHandle(NULL);
+    HINSTANCE hInst = GetModuleHandle(NULL);
 
     // COM 初始化
     InitVirtualDesktopManager();
 
     // 托盘 + 热键
-    if (!CreateMessageWindow(g_hInst)) {
+    if (!CreateMessageWindow(hInst)) {
         LOG("创建消息窗口失败\n");
         CleanupVirtualDesktopManager();
         return 1;
