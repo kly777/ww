@@ -272,8 +272,7 @@ HICON MakeTrayIcon(int number) {
     void* bits = NULL;
     HBITMAP hBmpColor =
         CreateDIBSection(memDC, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-
-    HBITMAP hOld = (HBITMAP)SelectObject(memDC, hBmpColor);
+    HBITMAP hOldBmp = (HBITMAP)SelectObject(memDC, hBmpColor);
 
     static const COLORREF kColors[] = {
         RGB(180, 50, 50),   // 0 红
@@ -288,37 +287,44 @@ HICON MakeTrayIcon(int number) {
         RGB(180, 160, 30),  // 9 金
     };
     RECT rc = {0, 0, w, h};
+
+    // ---- 绘制 ----
+    // 背景
     HBRUSH hBrBg = CreateSolidBrush(kColors[number]);
     FillRect(memDC, &rc, hBrBg);
-    DeleteObject(hBrBg);
 
     // 白色正方形边框
-    int margin = 0;
     HPEN hPn = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
     HBRUSH hBrNull = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HPEN hPnOld = (HPEN)SelectObject(memDC, hPn);
-    HBRUSH hBrOld = (HBRUSH)SelectObject(memDC, hBrNull);
-    Rectangle(memDC, margin, margin, w - margin, h - margin);
-    SelectObject(memDC, hPnOld);
-    SelectObject(memDC, hBrOld);
-    DeleteObject(hPn);
+    HPEN hOldPn = (HPEN)SelectObject(memDC, hPn);
+    HBRUSH hOldBr = (HBRUSH)SelectObject(memDC, hBrNull);
+    Rectangle(memDC, 0, 0, w, h);
 
+    // 数字
     SetBkMode(memDC, TRANSPARENT);
     SetTextColor(memDC, RGB(255, 255, 255));
     wchar_t num[2] = {(wchar_t)(L'0' + number), 0};
     HFONT hFont = CreateFontW(34, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                               ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    HFONT hFontOld = (HFONT)SelectObject(memDC, hFont);
+    HFONT hOldFont = (HFONT)SelectObject(memDC, hFont);
     SIZE sz;
     GetTextExtentPoint32W(memDC, num, 1, &sz);
     TEXTMETRIC tm;
     GetTextMetrics(memDC, &tm);
     int y = (h - tm.tmAscent) / 2 - 5;
     TextOutW(memDC, (w - sz.cx) / 2, y, num, 1);
-    SelectObject(memDC, hFontOld);
+
+    // ---- 逆序恢复 memDC 的原始 GDI 对象 ----
+    SelectObject(memDC, hOldFont);
+    SelectObject(memDC, hOldBr);
+    SelectObject(memDC, hOldPn);
+    SelectObject(memDC, hOldBmp);
+
+    // 此时所有创建的对象已取消选中，安全删除
     DeleteObject(hFont);
-    SelectObject(memDC, hOld);
+    DeleteObject(hPn);
+    DeleteObject(hBrBg);
 
     if (bits) {
         for (int i = 0; i < w * h; i++) ((BYTE*)bits)[i * 4 + 3] = 0xFF;
@@ -327,9 +333,9 @@ HICON MakeTrayIcon(int number) {
     // 掩码: 全白 = 全部不透明
     HBITMAP hBmpMask = CreateBitmap(w, h, 1, 1, NULL);
     HDC maskDC = CreateCompatibleDC(hdc);
-    HBITMAP hOldM = (HBITMAP)SelectObject(maskDC, hBmpMask);
+    HBITMAP hOldMask = (HBITMAP)SelectObject(maskDC, hBmpMask);
     FillRect(maskDC, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
-    SelectObject(maskDC, hOldM);
+    SelectObject(maskDC, hOldMask);
     DeleteDC(maskDC);
 
     ICONINFO ii = {};
@@ -338,8 +344,8 @@ HICON MakeTrayIcon(int number) {
     ii.hbmMask = hBmpMask;
     HICON hIcon = CreateIconIndirect(&ii);
 
-    DeleteObject(hBmpColor);
     DeleteObject(hBmpMask);
+    DeleteObject(hBmpColor);
     DeleteDC(memDC);
     ReleaseDC(NULL, hdc);
     return hIcon;
