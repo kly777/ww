@@ -354,14 +354,13 @@ HICON MakeTrayIcon(int number) {
 // ---- 更新托盘图标 ----
 void UpdateTrayIcon() {
     NOTIFYICONDATAW nid = {};
-    nid.cbSize = sizeof(nid);
+    nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
     nid.hWnd = g_hWnd;
     nid.uID = kIdTrayIcon;
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
 
     if (!g_trayAdded) {
-        nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
         nid.hIcon = MakeTrayIcon(g_trayNumber);
         swprintf(nid.szTip, 128, L"ww-%d", g_trayNumber);
         Shell_NotifyIconW(NIM_ADD, &nid);
