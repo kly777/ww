@@ -208,14 +208,28 @@ void RestoreSnapshot(int num) {
     // 第一步: 恢复窗口状态(位置+最小化/最大化/还原)
     //         最小化→最大化跨进程窗口时，直接 SetWindowPlacement(SW_MAXIMIZE)
     //         可能渲染异常(只显示还原尺寸的左上角)，改为两步: 先还原再最大化
-    for (const auto& w : wins) {
-        if (!IsWindow(w.hwnd)) continue;
+    for (size_t i = 0; i < wins.size(); i++) {
+        const auto& w = wins[i];
+        if (!IsWindow(w.hwnd)) {
+            LOG("[恢复] [%zu] 窗口已销毁，跳过", i);
+            continue;
+        }
         RECT r = w.rect;
         EnsureRectVisible(r, r.right - r.left, r.bottom - r.top);
+
+        BOOL iconic = IsIconic(w.hwnd);
+        const char* showCmdStr = w.showCmd == SW_MAXIMIZE ? "最大化" :
+                                 w.showCmd == SW_MINIMIZE ? "最小化" : "正常";
+        LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) %ldx%ld",
+            i, w.title.c_str(), iconic, showCmdStr,
+            r.left, r.top, r.right, r.bottom,
+            r.right - r.left, r.bottom - r.top);
+
         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
         wp.rcNormalPosition = r;
-        if (w.showCmd != SW_MINIMIZE && IsIconic(w.hwnd)) {
+        if (w.showCmd != SW_MINIMIZE && iconic) {
             // 当前最小化但目标不是最小化: 先设置正常位置并静默还原
+            LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s", i, showCmdStr);
             wp.showCmd = SW_SHOWNOACTIVATE;
             SetWindowPlacement(w.hwnd, &wp);
             // 再应用目标显示状态
