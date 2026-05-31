@@ -149,6 +149,27 @@ void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
     }
 }
 
+// ---- 显示器可见性检查 ----
+// 多显→单显切换时，保存的窗口位置可能完全脱离当前显示器
+BOOL IsRectOnScreen(const RECT& rect) {
+    return MonitorFromRect(&rect, MONITOR_DEFAULTTONULL) != NULL;
+}
+
+void EnsureRectVisible(RECT& rect, int width, int height) {
+    if (IsRectOnScreen(rect)) return;
+    // 窗口完全脱离所有显示器，移到主显示器居中
+    HMONITOR hPrimary = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi = {sizeof(MONITORINFO)};
+    GetMonitorInfo(hPrimary, &mi);
+    const RECT& work = mi.rcWork;
+    rect.left = work.left + ((work.right - work.left) - width) / 2;
+    rect.top = work.top + ((work.bottom - work.top) - height) / 2;
+    rect.right = rect.left + width;
+    rect.bottom = rect.top + height;
+    LOG("[修复] 窗口移到主显示器 (%ld,%ld,%ld,%ld)\n",
+        rect.left, rect.top, rect.right, rect.bottom);
+}
+
 // ---- 恢复快照 ----
 void RestoreSnapshot(int num) {
     if (num < 0 || num > 9) return;
@@ -169,7 +190,6 @@ void RestoreSnapshot(int num) {
     }
 
     auto& wins = snap.windows;
-    LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
 
     // 最小化当前窗口中不属于目标快照的窗口
     for (const auto& w : g_windows) {
@@ -185,15 +205,25 @@ void RestoreSnapshot(int num) {
 
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
 
-    // 第一步: 恢复窗口状态(位置+最小化/最大化/还原), 避免 ShowWindow
-    //         即时生效打乱 Z 序, 统一用 SetWindowPlacement 原子操作
+    // 第一步: 恢复窗口状态(位置+最小化/最大化/还原)
+    //         最小化→最大化跨进程窗口时，直接 SetWindowPlacement(SW_MAXIMIZE)
+    //         可能渲染异常(只显示还原尺寸的左上角)，改为两步: 先还原再最大化
     for (const auto& w : wins) {
         if (!IsWindow(w.hwnd)) continue;
+        RECT r = w.rect;
+        EnsureRectVisible(r, r.right - r.left, r.bottom - r.top);
         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
-        wp.showCmd = w.showCmd;
-        wp.rcNormalPosition = w.rect;
-        // ptMinPosition / ptMaxPosition 置零，由系统自己计算
-        SetWindowPlacement(w.hwnd, &wp);
+        wp.rcNormalPosition = r;
+        if (w.showCmd != SW_MINIMIZE && IsIconic(w.hwnd)) {
+            // 当前最小化但目标不是最小化: 先设置正常位置并静默还原
+            wp.showCmd = SW_SHOWNOACTIVATE;
+            SetWindowPlacement(w.hwnd, &wp);
+            // 再应用目标显示状态
+            ShowWindow(w.hwnd, w.showCmd);
+        } else {
+            wp.showCmd = w.showCmd;
+            SetWindowPlacement(w.hwnd, &wp);
+        }
     }
 
     // 第二步: 按 zOrder 恢复 Z 序
