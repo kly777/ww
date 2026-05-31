@@ -119,7 +119,7 @@ BOOL ShouldSkipWindow(HWND hwnd) {
     GetWindowTextW(hwnd, title, 256);
     if (wcslen(title) == 0) return TRUE;
     GetClassNameW(hwnd, wclass, 256);
-    // 跳过桌面窗口本身 (Progman)，它不是用户窗口
+    // 跳过桌面窗口本身 (Progman)
     if (_wcsicmp(wclass, L"Progman") == 0) return TRUE;
     // 如果存在其他虚拟桌面，只枚举当前桌面的窗口
     if (g_pDesktopManager) {
@@ -228,7 +228,9 @@ void RestoreSnapshot(int num) {
             continue;
         }
         RECT r = w.rect;
-        EnsureRectVisible(r, r.right - r.left, r.bottom - r.top);
+        long ww = r.right - r.left;
+        long wh = r.bottom - r.top;
+        EnsureRectVisible(r, ww, wh);
 
         BOOL iconic = IsIconic(w.hwnd);
         const char* showCmdStr = w.showCmd == SW_MAXIMIZE   ? "最大化"
@@ -237,7 +239,7 @@ void RestoreSnapshot(int num) {
         LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
             "%ldx%ld",
             i, w.title.c_str(), iconic, showCmdStr, r.left, r.top, r.right,
-            r.bottom, r.right - r.left, r.bottom - r.top);
+            r.bottom, ww, wh);
 
         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
         wp.rcNormalPosition = r;
@@ -422,16 +424,15 @@ void UpdateTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
 
+    nid.hIcon = MakeTrayIcon(g_trayNumber);
+    swprintf(nid.szTip, 128, L"ww-%d", g_trayNumber);
+
     if (!g_trayAdded) {
-        nid.hIcon = MakeTrayIcon(g_trayNumber);
-        swprintf(nid.szTip, 128, L"ww-%d", g_trayNumber);
         Shell_NotifyIconW(NIM_ADD, &nid);
         // NIM_ADD 后 Shell 已持有图标副本，可以销毁我们的 GDI 对象
         if (nid.hIcon) DestroyIcon(nid.hIcon);
         g_trayAdded = TRUE;
     } else {
-        nid.hIcon = MakeTrayIcon(g_trayNumber);
-        swprintf(nid.szTip, 128, L"ww-%d", g_trayNumber);
         if (!Shell_NotifyIconW(NIM_MODIFY, &nid))
             LOG("[!] NIM_MODIFY 失败: %lu\n", GetLastError());
         if (nid.hIcon) DestroyIcon(nid.hIcon);
@@ -506,7 +507,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_DESTROY: {
             UnregisterHotkeys(hwnd);
             NOTIFYICONDATAW nid = {};
-            nid.cbSize = sizeof(nid);
+            nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
             nid.hWnd = hwnd;
             nid.uID = kIdTrayIcon;
             Shell_NotifyIconW(NIM_DELETE, &nid);
