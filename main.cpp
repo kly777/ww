@@ -1,3 +1,5 @@
+// 请求 Windows 10+ API (IVirtualDesktopManager 等)
+// 不加这三个宏，windows.h 不会暴露 SHCreateItemFromParsingName 等接口
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
 #define NTDDI_VERSION 0x0A000007
@@ -15,7 +17,10 @@
 
 constexpr int kMaxWindows = 256;
 constexpr UINT WM_TRAYICON = WM_APP + 1;
-constexpr UINT WM_INIT_TRAY = WM_APP + 2;  // 延迟初始化托盘
+// WM_INIT_TRAY: 延迟初始化托盘 必须在 GetMessage 循环跑起来之后才能
+// NIM_ADD，而 WM_CREATE 在 CreateWindow 返回前就处理完了，所以用 PostMessage
+// 推迟到消息循环启动后再执行
+constexpr UINT WM_INIT_TRAY = WM_APP + 2;
 constexpr UINT kIdTrayIcon = 1;
 enum class HotkeyId : int { Base = 0 };
 enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
@@ -26,9 +31,6 @@ enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 #endif
 
-// ---- 窗口 / 快照 ----
-// WinInfo 存
-// hwnd，一次运行期间不变，恢复时直接按句柄定位，无需标题/类名/路径匹配
 struct WinInfo {
     HWND hwnd;
     std::string title;  // 仅用于日志
@@ -55,11 +57,14 @@ static HWND g_hWnd = NULL;
 std::string WideToUtf8(const wchar_t* src) {
     int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, NULL, 0, NULL, NULL);
     if (len <= 0) return {};
-    std::string result(len - 1, '\0');  // len includes null terminator
+    std::string result(len - 1, '\0');  // len 含 null terminator
     WideCharToMultiByte(CP_UTF8, 0, src, -1, &result[0], len, NULL, NULL);
     return result;
 }
 
+// IVirtualDesktopManager 要求 STA 线程模型，所以用
+// COINIT_APARTMENTTHREADED MTA 下 CoCreateInstance 会返回
+// CO_E_NOTINITIALIZED
 BOOL InitVirtualDesktopManager() {
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) return FALSE;
@@ -96,8 +101,9 @@ void FillWindowInfo(WinInfo& w, HWND hwnd) {
         w.showCmd = SW_SHOWNORMAL;
 
     // 用 GetWindowPlacement 获取正常位置，而非 GetWindowRect
-    // 问题：最小化窗口的 GetWindowRect 返回 (-32000,-32000) 等垃圾坐标
-    // 解决：GetWindowPlacement 的 rcNormalPosition 始终返回正常（非最小化）位置
+    // 最小化窗口的 GetWindowRect 返回 (-32000,-32000)——这是系统将窗口
+    // "移出屏幕"的内部实现 GetWindowPlacement 的 rcNormalPosition 始终
+    // 返回缩小前的正常位置
     WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
     GetWindowPlacement(hwnd, &wp);
     w.rect = wp.rcNormalPosition;
@@ -113,7 +119,9 @@ BOOL ShouldSkipWindow(HWND hwnd) {
     GetWindowTextW(hwnd, title, 256);
     if (wcslen(title) == 0) return TRUE;
     GetClassNameW(hwnd, wclass, 256);
+    // 跳过桌面窗口本身 (Progman)，它不是用户窗口
     if (_wcsicmp(wclass, L"Progman") == 0) return TRUE;
+    // 如果存在其他虚拟桌面，只枚举当前桌面的窗口
     if (g_pDesktopManager) {
         GUID desktopId;
         if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId)) ||
@@ -123,7 +131,6 @@ BOOL ShouldSkipWindow(HWND hwnd) {
     return FALSE;
 }
 
-// ---- 枚举回调 ----
 BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     if (ShouldSkipWindow(hwnd)) return TRUE;
     if (g_windows.size() >= kMaxWindows) return TRUE;
@@ -133,7 +140,6 @@ BOOL CALLBACK EnumWindowCallback(HWND hwnd, LPARAM lParam) {
     return TRUE;
 }
 
-// ---- 保存快照 ----
 void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
@@ -150,14 +156,17 @@ void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
 }
 
 // ---- 显示器可见性检查 ----
-// 多显→单显切换时，保存的窗口位置可能完全脱离当前显示器
+// 多显→单显切换时，保存的窗口位置可能完全脱离当前显示器（比如副屏
+// 上的窗口坐标 x>1920，副屏拔掉后该坐标对应区域不存在任何显示器）
 BOOL IsRectOnScreen(const RECT& rect) {
+    // MONITOR_DEFAULTTONULL: 矩形完全脱离所有显示器时返回 NULL
     return MonitorFromRect(&rect, MONITOR_DEFAULTTONULL) != NULL;
 }
 
 void EnsureRectVisible(RECT& rect, int width, int height) {
     if (IsRectOnScreen(rect)) return;
-    // 窗口完全脱离所有显示器，移到主显示器居中
+    // 窗口完全脱离所有显示器，移到主显示器居中 用 rcWork 而非 rcMonitor
+    // 避开任务栏区域
     HMONITOR hPrimary = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
     MONITORINFO mi = {sizeof(MONITORINFO)};
     GetMonitorInfo(hPrimary, &mi);
@@ -179,7 +188,7 @@ void RestoreSnapshot(int num) {
         return;
     }
 
-    // 临时禁用窗口最小化/还原动画
+    // 临时禁用窗口最小化/还原动画，让批量恢复像瞬间切换而非逐个动画
     ANIMATIONINFO ai = {sizeof(ANIMATIONINFO)};
     BOOL origAnimate = FALSE;
     if (SystemParametersInfo(SPI_GETANIMATION, sizeof(ai), &ai, 0))
@@ -191,7 +200,7 @@ void RestoreSnapshot(int num) {
 
     auto& wins = snap.windows;
 
-    // 最小化当前窗口中不属于目标快照的窗口
+    // 将当前可见窗口中"不在目标快照里"的全部最小化
     for (const auto& w : g_windows) {
         auto it =
             std::find_if(snap.windows.begin(), snap.windows.end(),
@@ -203,9 +212,15 @@ void RestoreSnapshot(int num) {
 
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
 
-    // 第一步: 恢复窗口状态(位置+最小化/最大化/还原)
-    //         最小化→最大化跨进程窗口时，直接 SetWindowPlacement(SW_MAXIMIZE)
-    //         可能渲染异常(只显示还原尺寸的左上角)，改为两步: 先还原再最大化
+    // 第一步：恢复窗口状态（位置 + 最小化/最大化/还原）
+    //
+    // 将位置和 Z 序分成两步的原因：SetWindowPlacement 能原子地设置位置
+    // 和显示状态但不控制 Z 序；DeferWindowPos 能批量调 Z 序但不支持
+    // 显示状态变更（SW_MINIMIZE / SW_MAXIMIZE）
+    //
+    // 最小化→最大化跨进程窗口时，直接 SetWindowPlacement(SW_MAXIMIZE)
+    // 可能渲染异常（只显示还原尺寸的左上角，其余透明），所以拆成两步
+    // 先 SW_SHOWNOACTIVATE 还原，再 ShowWindow 最大化
     for (size_t i = 0; i < wins.size(); i++) {
         const auto& w = wins[i];
         if (!IsWindow(w.hwnd)) {
@@ -227,12 +242,10 @@ void RestoreSnapshot(int num) {
         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
         wp.rcNormalPosition = r;
         if (w.showCmd != SW_MINIMIZE && iconic) {
-            // 当前最小化但目标不是最小化: 先设置正常位置并静默还原
             LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s", i,
                 showCmdStr);
             wp.showCmd = SW_SHOWNOACTIVATE;
             SetWindowPlacement(w.hwnd, &wp);
-            // 再应用目标显示状态
             ShowWindow(w.hwnd, w.showCmd);
         } else {
             wp.showCmd = w.showCmd;
@@ -240,7 +253,8 @@ void RestoreSnapshot(int num) {
         }
     }
 
-    // 第二步: 按 zOrder 恢复 Z 序
+    // 第二步：按 zOrder 恢复 Z 序
+    // 排序后从 HWND_BOTTOM 开始逐个往上叠，恢复原始前后关系
     std::sort(wins.begin(), wins.end(), [](const WinInfo& a, const WinInfo& b) {
         return a.zOrder < b.zOrder;
     });
@@ -251,7 +265,9 @@ void RestoreSnapshot(int num) {
             HWND after = HWND_BOTTOM;
             for (const auto& w : wins) {
                 if (!IsWindow(w.hwnd)) continue;
-                // 位置和状态已由 SetWindowPlacement 设置, 这里只修 Z 序
+                // SWP_NOMOVE | SWP_NOSIZE: 位置和大小已由 SetWindowPlacement
+                // 设置好了，这里只修 Z 序
+                // SWP_NOACTIVATE: 不改变当前活动窗口，避免抢焦点
                 UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
                 hdwp = DeferWindowPos(hdwp, w.hwnd, after, 0, 0, 0, 0, flags);
                 if (!hdwp) break;
@@ -261,7 +277,7 @@ void RestoreSnapshot(int num) {
         }
     }
 
-    // 恢复动画
+    // 恢复动画设置
     if (origAnimate) {
         ai.iMinAnimate = origAnimate;
         SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
@@ -272,43 +288,40 @@ void RestoreSnapshot(int num) {
 
 // ---- 切换工作区 ----
 void UpdateTrayIcon();
-static int g_prevTrayNumber = 0;  // 上一个数字，Ctrl+N 再按时切回
+// 再次按同一数字 → 回到上一个快照，实现 Ctrl+N 双击在最近两个工作区间切换
+static int g_prevTrayNumber = 0;
 void SwitchSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
 
-    // 再次按同一数字 → 回到上一个 snapshot
     if (slot == g_trayNumber) {
         slot = g_prevTrayNumber;
         if (slot == g_trayNumber) return;
     }
 
-    // 先重新枚举当前窗口状态
     g_windows.clear();
     g_zOrderCounter = 0;
     EnumWindows(EnumWindowCallback, 0);
 
-    // 保存当前状态到旧数字的快照
     SaveSnapshot(g_trayNumber, g_windows);
 
-    // 切换到新数字
     g_prevTrayNumber = g_trayNumber;
     g_trayNumber = slot;
 
-    // 恢复新数字的快照
     RestoreSnapshot(slot);
 
     UpdateTrayIcon();
     LOG("[切换] %d -> %d\n", g_prevTrayNumber, slot);
 }
 
-// ---- 动态生成托盘图标 ----
+// ---- 生成托盘图标 ----
 HICON MakeTrayIcon(int number) {
     int w = 32, h = 32;
 
     HDC hdc = GetDC(NULL);
     HDC memDC = CreateCompatibleDC(hdc);
 
-    // 颜色位图 (32-bit, top-down)
+    // biHeight 为负值 = top-down DIB，此时位图数据从顶行开始排列
+    // 简化后面 alpha 通道填充的寻址（bits[0] 就是第一行第一个像素）
     BITMAPINFO bi = {};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bi.bmiHeader.biWidth = w;
@@ -337,18 +350,15 @@ HICON MakeTrayIcon(int number) {
     RECT rc = {0, 0, w, h};
 
     // ---- 绘制 ----
-    // 背景
     HBRUSH hBrBg = CreateSolidBrush(kColors[number]);
     FillRect(memDC, &rc, hBrBg);
 
-    // 白色正方形边框
     HPEN hPn = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
     HBRUSH hBrNull = (HBRUSH)GetStockObject(NULL_BRUSH);
     HPEN hOldPn = (HPEN)SelectObject(memDC, hPn);
     HBRUSH hOldBr = (HBRUSH)SelectObject(memDC, hBrNull);
     Rectangle(memDC, 0, 0, w, h);
 
-    // 数字
     SetBkMode(memDC, TRANSPARENT);
     SetTextColor(memDC, RGB(255, 255, 255));
     wchar_t num[2] = {(wchar_t)(L'0' + number), 0};
@@ -363,22 +373,25 @@ HICON MakeTrayIcon(int number) {
     int y = (h - tm.tmAscent) / 2 - 5;
     TextOutW(memDC, (w - sz.cx) / 2, y, num, 1);
 
-    // ---- 逆序恢复 memDC 的原始 GDI 对象 ----
+    // GDI 对象在选入 DC 时不能删除 必须先逐一 SelectObject 恢复原始
+    // 对象（按入栈反序），之后再 DeleteObject 才安全
     SelectObject(memDC, hOldFont);
     SelectObject(memDC, hOldBr);
     SelectObject(memDC, hOldPn);
     SelectObject(memDC, hOldBmp);
 
-    // 此时所有创建的对象已取消选中，安全删除
     DeleteObject(hFont);
     DeleteObject(hPn);
     DeleteObject(hBrBg);
 
+    // 填充 alpha 通道为不透明：CreateDIBSection 不会初始化像素数据，
+    // 背景填充只写了 RGB 没写 A，这里补上
     if (bits) {
         for (int i = 0; i < w * h; i++) ((BYTE*)bits)[i * 4 + 3] = 0xFF;
     }
 
-    // 掩码: 全白 = 全部不透明
+    // 掩码位图：全白代表图标完全不透明 CreateIconIndirect 同时需要
+    // 颜色位图和掩码合成最终图标
     HBITMAP hBmpMask = CreateBitmap(w, h, 1, 1, NULL);
     HDC maskDC = CreateCompatibleDC(hdc);
     HBITMAP hOldMask = (HBITMAP)SelectObject(maskDC, hBmpMask);
@@ -399,7 +412,7 @@ HICON MakeTrayIcon(int number) {
     return hIcon;
 }
 
-static BOOL g_trayAdded = FALSE;  // 是否已 NIM_ADD
+static BOOL g_trayAdded = FALSE;
 // ---- 更新托盘图标 ----
 void UpdateTrayIcon() {
     NOTIFYICONDATAW nid = {};
@@ -413,6 +426,7 @@ void UpdateTrayIcon() {
         nid.hIcon = MakeTrayIcon(g_trayNumber);
         swprintf(nid.szTip, 128, L"ww-%d", g_trayNumber);
         Shell_NotifyIconW(NIM_ADD, &nid);
+        // NIM_ADD 后 Shell 已持有图标副本，可以销毁我们的 GDI 对象
         if (nid.hIcon) DestroyIcon(nid.hIcon);
         g_trayAdded = TRUE;
     } else {
@@ -424,9 +438,8 @@ void UpdateTrayIcon() {
     }
 }
 
-// ---- 注册热键 ----
 void RegisterHotkeys(HWND hwnd) {
-    // Ctrl+0 ~ Ctrl+9
+    // MOD_NOREPEAT: 按住不放只触发一次
     for (int i = 0; i <= 9; i++) {
         if (!RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i,
                             MOD_CONTROL | MOD_NOREPEAT, '0' + i)) {
@@ -442,6 +455,7 @@ void UnregisterHotkeys(HWND hwnd) {
 }
 
 // ---- 开机启动 ----
+// 通过 HKCU\...\Run 注册表项实现，系统启动时自动拉起 ww.exe
 BOOL IsAutoStartEnabled() {
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
@@ -474,17 +488,15 @@ void SetAutoStart(BOOL enable) {
     RegCloseKey(hKey);
 }
 
-// ---- 窗口过程 ----
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
             RegisterHotkeys(hwnd);
-            PostMessage(hwnd, WM_INIT_TRAY, 0, 0);  // 延迟到消息循环启动
+            PostMessage(hwnd, WM_INIT_TRAY, 0, 0);
             return 0;
         }
 
         case WM_INIT_TRAY: {
-            // 延迟枚举：此时消息循环已启动，托盘已就绪
             EnumWindows(EnumWindowCallback, 0);
             LOG("共 %d 个窗口\n", (int)g_windows.size());
             UpdateTrayIcon();
@@ -510,9 +522,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_TRAYICON: {
             if (lParam == WM_RBUTTONUP) {
-                // 右键菜单
                 HMENU hMenu = CreatePopupMenu();
-                // AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
                 AppendMenuW(hMenu,
                             MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : 0),
                             (UINT_PTR)MenuId::AutoStart, L"开机启动");
@@ -520,7 +530,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                 POINT pt;
                 GetCursorPos(&pt);
-                SetForegroundWindow(hwnd);  // 确保菜单能正常关闭
+                // 必须先 SetForegroundWindow，否则 TrackPopupMenu 弹出后
+                // 点击菜单外区域不会自动关闭（Windows 前台窗口规则）
+                SetForegroundWindow(hwnd);
                 int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY,
                                          pt.x, pt.y, 0, hwnd, NULL);
                 DestroyMenu(hMenu);
@@ -538,6 +550,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 // ---- 创建隐藏窗口（用于接收消息） ----
+// 使用 WS_POPUP 而非 HWND_MESSAGE 父窗口，因为 Shell_NotifyIcon 需要
+// 一个能接收回调消息的真实窗口句柄 WS_POPUP 创建 0×0 的不可见窗口
 BOOL CreateMessageWindow(HINSTANCE hInstance) {
     const wchar_t* CLASS_NAME = L"WW_TrayWindow";
 
@@ -553,23 +567,21 @@ BOOL CreateMessageWindow(HINSTANCE hInstance) {
 }
 
 int main() {
-    // 单实例保护
+    // 单实例保护：命名互斥体跨进程可见，第二个实例检测到已存在直接退出
     HANDLE hMutex = CreateMutexW(NULL, FALSE, L"WW_SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         LOG("已有实例在运行，退出\n");
         return 0;
     }
 
-    SetProcessDPIAware();  // 修复高 DPI 模糊
+    SetProcessDPIAware();
 #ifndef RELEASE
     SetConsoleOutputCP(CP_UTF8);
 #endif
     HINSTANCE hInst = GetModuleHandle(NULL);
 
-    // COM 初始化
     InitVirtualDesktopManager();
 
-    // 托盘 + 热键
     if (!CreateMessageWindow(hInst)) {
         LOG("创建消息窗口失败\n");
         CleanupVirtualDesktopManager();
@@ -579,7 +591,6 @@ int main() {
     LOG("\n=== 托盘图标已创建 ===\n");
     LOG("Ctrl+0~Ctrl+9 切换托盘数字 | 右键托盘图标选择数字或退出\n\n");
 
-    // 消息循环
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
