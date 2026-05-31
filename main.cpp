@@ -173,38 +173,34 @@ void RestoreSnapshot(int num) {
 
     // 最小化当前窗口中不属于目标快照的窗口
     for (const auto& w : g_windows) {
-        auto it =
-            std::find_if(wins.begin(), wins.end(),
-                         [&](const WinInfo& sw) { return sw.hwnd == w.hwnd; });
-        if (it == wins.end()) {
+        auto it = std::find_if(snap.windows.begin(),
+                               snap.windows.end(),
+                               [&](const WinInfo& sw) {
+                                   return sw.hwnd == w.hwnd;
+                               });
+        if (it == snap.windows.end()) {
             ShowWindow(w.hwnd, SW_MINIMIZE);
         }
     }
 
-    // Step 1: 恢复目标窗口的状态和位置
-    // 用 WM_SETREDRAW 冻结绘制，避免最小化→最大化中间状态闪烁
+    LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
+
+    // 第一步: 恢复窗口状态(位置+最小化/最大化/还原), 避免 ShowWindow
+    //         即时生效打乱 Z 序, 统一用 SetWindowPlacement 原子操作
     for (const auto& w : wins) {
         if (!IsWindow(w.hwnd)) continue;
-        BOOL wasIconic = IsIconic(w.hwnd);
-        if (wasIconic) {
-            SendMessage(w.hwnd, WM_SETREDRAW, FALSE, 0);
-            ShowWindow(w.hwnd, SW_SHOWNOACTIVATE);
-        }
         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
         wp.showCmd = w.showCmd;
         wp.rcNormalPosition = w.rect;
+        // ptMinPosition / ptMaxPosition 置零，由系统自己计算
         SetWindowPlacement(w.hwnd, &wp);
-        if (wasIconic) {
-            SendMessage(w.hwnd, WM_SETREDRAW, TRUE, 0);
-            RedrawWindow(w.hwnd, NULL, NULL,
-                         RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_ERASE);
-        }
     }
 
-    // Step 2: 按 zOrder 恢复 Z 序（一次批处理，抑制逐个重绘）
-    std::sort(wins.begin(), wins.end(), [](const WinInfo& a, const WinInfo& b) {
-        return a.zOrder < b.zOrder;
-    });
+    // 第二步: 按 zOrder 恢复 Z 序
+    std::sort(wins.begin(), wins.end(),
+              [](const WinInfo& a, const WinInfo& b) {
+                  return a.zOrder < b.zOrder;
+              });
 
     if (!wins.empty()) {
         HDWP hdwp = BeginDeferWindowPos((int)wins.size());
@@ -212,8 +208,8 @@ void RestoreSnapshot(int num) {
             HWND after = HWND_BOTTOM;
             for (const auto& w : wins) {
                 if (!IsWindow(w.hwnd)) continue;
-                UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
-                             SWP_NOREDRAW | SWP_NOCOPYBITS;
+                // 位置和状态已由 SetWindowPlacement 设置, 这里只修 Z 序
+                UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
                 hdwp = DeferWindowPos(hdwp, w.hwnd, after, 0, 0, 0, 0, flags);
                 if (!hdwp) break;
                 after = w.hwnd;
