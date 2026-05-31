@@ -166,8 +166,8 @@ void EnsureRectVisible(RECT& rect, int width, int height) {
     rect.top = work.top + ((work.bottom - work.top) - height) / 2;
     rect.right = rect.left + width;
     rect.bottom = rect.top + height;
-    LOG("[修复] 窗口移到主显示器 (%ld,%ld,%ld,%ld)\n",
-        rect.left, rect.top, rect.right, rect.bottom);
+    LOG("[修复] 窗口移到主显示器 (%ld,%ld,%ld,%ld)\n", rect.left, rect.top,
+        rect.right, rect.bottom);
 }
 
 // ---- 恢复快照 ----
@@ -193,11 +193,9 @@ void RestoreSnapshot(int num) {
 
     // 最小化当前窗口中不属于目标快照的窗口
     for (const auto& w : g_windows) {
-        auto it = std::find_if(snap.windows.begin(),
-                               snap.windows.end(),
-                               [&](const WinInfo& sw) {
-                                   return sw.hwnd == w.hwnd;
-                               });
+        auto it =
+            std::find_if(snap.windows.begin(), snap.windows.end(),
+                         [&](const WinInfo& sw) { return sw.hwnd == w.hwnd; });
         if (it == snap.windows.end()) {
             ShowWindow(w.hwnd, SW_MINIMIZE);
         }
@@ -218,18 +216,20 @@ void RestoreSnapshot(int num) {
         EnsureRectVisible(r, r.right - r.left, r.bottom - r.top);
 
         BOOL iconic = IsIconic(w.hwnd);
-        const char* showCmdStr = w.showCmd == SW_MAXIMIZE ? "最大化" :
-                                 w.showCmd == SW_MINIMIZE ? "最小化" : "正常";
-        LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) %ldx%ld",
-            i, w.title.c_str(), iconic, showCmdStr,
-            r.left, r.top, r.right, r.bottom,
-            r.right - r.left, r.bottom - r.top);
+        const char* showCmdStr = w.showCmd == SW_MAXIMIZE   ? "最大化"
+                                 : w.showCmd == SW_MINIMIZE ? "最小化"
+                                                            : "正常";
+        LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
+            "%ldx%ld",
+            i, w.title.c_str(), iconic, showCmdStr, r.left, r.top, r.right,
+            r.bottom, r.right - r.left, r.bottom - r.top);
 
         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
         wp.rcNormalPosition = r;
         if (w.showCmd != SW_MINIMIZE && iconic) {
             // 当前最小化但目标不是最小化: 先设置正常位置并静默还原
-            LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s", i, showCmdStr);
+            LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s", i,
+                showCmdStr);
             wp.showCmd = SW_SHOWNOACTIVATE;
             SetWindowPlacement(w.hwnd, &wp);
             // 再应用目标显示状态
@@ -241,10 +241,9 @@ void RestoreSnapshot(int num) {
     }
 
     // 第二步: 按 zOrder 恢复 Z 序
-    std::sort(wins.begin(), wins.end(),
-              [](const WinInfo& a, const WinInfo& b) {
-                  return a.zOrder < b.zOrder;
-              });
+    std::sort(wins.begin(), wins.end(), [](const WinInfo& a, const WinInfo& b) {
+        return a.zOrder < b.zOrder;
+    });
 
     if (!wins.empty()) {
         HDWP hdwp = BeginDeferWindowPos((int)wins.size());
