@@ -182,14 +182,23 @@ void RestoreSnapshot(int num) {
     }
 
     // Step 1: 恢复目标窗口的状态和位置
-    // SetWindowPlacement 原子设置 showCmd + rcNormalPosition，
-    // 能正确处理最小化→还原的过渡
+    // 用 WM_SETREDRAW 冻结绘制，避免最小化→最大化中间状态闪烁
     for (const auto& w : wins) {
         if (!IsWindow(w.hwnd)) continue;
+        BOOL wasIconic = IsIconic(w.hwnd);
+        if (wasIconic) {
+            SendMessage(w.hwnd, WM_SETREDRAW, FALSE, 0);
+            ShowWindow(w.hwnd, SW_SHOWNOACTIVATE);
+        }
         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
         wp.showCmd = w.showCmd;
         wp.rcNormalPosition = w.rect;
         SetWindowPlacement(w.hwnd, &wp);
+        if (wasIconic) {
+            SendMessage(w.hwnd, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(w.hwnd, NULL, NULL,
+                         RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_ERASE);
+        }
     }
 
     // Step 2: 按 zOrder 恢复 Z 序（一次批处理，抑制逐个重绘）
