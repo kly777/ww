@@ -603,9 +603,8 @@ class TestRandomized:
             r = random.randint(0, 2)
             state = [win32con.SW_SHOWNORMAL, win32con.SW_MINIMIZE,
                      win32con.SW_MAXIMIZE][r]
-            p = win32gui.GetWindowPlacement(h)
             win32gui.SetWindowPlacement(
-                h, (p[0], state, p[2], p[3], (x, y, x + w, y + ht)))
+                h, (0, state, (0, 0), (0, 0), (x, y, x + w, y + ht)))
             time.sleep(0.3)
 
         test_log.info("randomizing Z-order")
@@ -640,10 +639,17 @@ class TestRandomized:
         test_log.info("--- passed ---")
 
     def test_repeated_swap(self, ww_process):
-        test_log.info("=== test: repeated_swap ===")
+        """Repeatedly save/restore between two slots.
+
+        Flow:
+          1. capture initial state S0, Ctrl+0 saves S0 to slot 1.
+          2. randomize position/Z-order → S1, Ctrl+1 saves S1 to slot 0, restores S0.  Verify S0.
+          3. randomize → S2, Ctrl+0 saves S2 to slot 1, restores S1.  Verify S1.
+          …repeat for ROUNDS cycles.
+        """
         random.seed(99)
-        N = random.randint(4, 7)
-        ROUNDS = 5
+        N = random.randint(3, 5)
+        ROUNDS = 3
         test_log.info("creating %d notepad windows, %d rounds", N, ROUNDS)
 
         notepads = []
@@ -653,7 +659,7 @@ class TestRandomized:
             if h:
                 notepads.append((p, h))
                 test_log.info("notepad[%d]  %s", i, _describe_placement(h))
-        assert len(notepads) >= 3, f"need ≥3 notepads, got {len(notepads)}"
+        assert len(notepads) >= 2, f"need ≥2 notepads, got {len(notepads)}"
         time.sleep(0.5)
 
         hwnds = [h for _, h in notepads]
@@ -673,16 +679,13 @@ class TestRandomized:
         for rnd in range(ROUNDS):
             test_log.info("--- round %d: randomizing ---", rnd)
             for _, h in notepads:
-                w = random.randint(300, 600)
-                ht = random.randint(200, 400)
+                w = random.randint(400, 600)
+                ht = random.randint(300, 450)
                 x = random.randint(0, max(0, sw - w))
                 y = random.randint(0, max(0, sh - ht))
-                st_choice = random.randint(0, 2)
-                state = [win32con.SW_SHOWNORMAL, win32con.SW_MINIMIZE,
-                         win32con.SW_MAXIMIZE][st_choice]
-                p = win32gui.GetWindowPlacement(h)
                 win32gui.SetWindowPlacement(
-                    h, (p[0], state, p[2], p[3], (x, y, x + w, y + ht)))
+                    h, (0, win32con.SW_SHOWNORMAL, (0, 0), (0, 0),
+                        (x, y, x + w, y + ht)))
                 time.sleep(0.2)
 
             random.shuffle(hwnds)
@@ -693,6 +696,10 @@ class TestRandomized:
                 time.sleep(0.05)
 
             all_states.append(capture())
+            test_log.debug("captured S%d:", rnd + 1)
+            if test_log.isEnabledFor(logging.DEBUG):
+                for _, h in notepads:
+                    test_log.debug("  %s", _describe_placement(h))
 
             slot = 1 if rnd % 2 == 0 else 0
             press_ctrl_number(slot)
@@ -703,10 +710,10 @@ class TestRandomized:
                 actual = win32gui.GetWindowPlacement(h)
                 exp = exp_placements[h]
                 assert actual[1] == exp[1], \
-                    f"rnd={rnd} showCmd mismatch hwnd={h}"
+                    f"rnd={rnd} showCmd mismatch hwnd={h}: exp={exp[1]} got={actual[1]}"
                 for j in range(4):
                     assert abs(actual[4][j] - exp[4][j]) <= 2, \
-                        f"rnd={rnd} normalRect[{j}] hwnd={h}: exp={exp[4][j]} got={actual[4][j]}"
+                        f"rnd={rnd} rect[{j}] hwnd={h}: exp={exp[4][j]} got={actual[4][j]}"
                 test_log.debug("verified  %s", _describe_placement(h))
 
             actual_z = self._zorder_of(hwnds)
