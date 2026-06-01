@@ -298,9 +298,9 @@ void RestoreSnapshot(int num) {
 
         // 然后设置目标状态
         if (w.showCmd == SW_MAXIMIZE) {
-            ShowWindow(w.hwnd, SW_MAXIMIZE);
+            ShowWindow(w.hwnd, SW_SHOWMAXIMIZED);
         } else if (w.showCmd == SW_MINIMIZE) {
-            ShowWindow(w.hwnd, SW_MINIMIZE);
+            ShowWindow(w.hwnd, SW_SHOWMINIMIZED);
         } else {
             // 正常状态：可能需要调整位置
             WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
