@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -49,8 +50,24 @@ static std::vector<WinInfo> g_windows;
 static UINT g_zOrderCounter = 0;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 static int g_trayNumber = 1;  // 托盘显示的数字 0-9
+static int g_prevTrayNumber = 0;
 
-static std::array<Snapshot, 10> g_snapshots;  // 每个数字的快照
+static std::array<Snapshot, 10> g_snapshots;  // 当前桌面的快照
+
+// 每个虚拟桌面独立维护 10 槽快照 + 托盘状态
+struct GuidLess {
+    bool operator()(const GUID& a, const GUID& b) const {
+        return memcmp(&a, &b, sizeof(GUID)) < 0;
+    }
+};
+struct DesktopState {
+    std::array<Snapshot, 10> snapshots;
+    int trayNumber = 0;
+    int prevTrayNumber = 0;
+};
+static std::map<GUID, DesktopState, GuidLess> g_desktopStates;
+static GUID g_currentDesktopId = GUID_NULL;
+
 static HWND g_hWnd = NULL;
 
 // ---- 工具函数 ----
@@ -290,19 +307,63 @@ void RestoreSnapshot(int num) {
 
 // ---- 切换工作区 ----
 void UpdateTrayIcon();
+// 通过已枚举窗口探测桌面 GUID 并同步桌面状态
+// EnumWindows 回调中 ShouldSkipWindow 已用 GetWindowDesktopId 过滤，
+// 故 g_windows 中每个窗口都有合法桌面 GUID，比 GetForegroundWindow 可靠
+static void SyncDesktopState() {
+    GUID newId = GUID_NULL;
+    if (g_pDesktopManager && !g_windows.empty())
+        g_pDesktopManager->GetWindowDesktopId(g_windows[0].hwnd, &newId);
+
+    // 无法确定桌面 GUID（g_windows 为空或虚拟桌面管理器不可用）
+    if (IsEqualGUID(newId, GUID_NULL)) return;
+
+    // 首次运行
+    if (IsEqualGUID(g_currentDesktopId, GUID_NULL)) {
+        g_currentDesktopId = newId;
+        return;
+    }
+    if (IsEqualGUID(g_currentDesktopId, newId)) return;
+
+    // 保存当前桌面状态
+    DesktopState& oldState = g_desktopStates[g_currentDesktopId];
+    oldState.snapshots = g_snapshots;
+    oldState.trayNumber = g_trayNumber;
+    oldState.prevTrayNumber = g_prevTrayNumber;
+
+    LOG("[桌面] 离开桌面 (tray=%d)\n", g_trayNumber);
+
+    // 加载新桌面状态
+    auto it = g_desktopStates.find(newId);
+    if (it != g_desktopStates.end()) {
+        g_snapshots = it->second.snapshots;
+        g_trayNumber = it->second.trayNumber;
+        g_prevTrayNumber = it->second.prevTrayNumber;
+        LOG("[桌面] 进入已知桌面 (tray=%d)\n", g_trayNumber);
+    } else {
+        g_snapshots = {};
+        g_trayNumber = 0;
+        g_prevTrayNumber = 0;
+        LOG("[桌面] 进入新桌面\n");
+    }
+    g_currentDesktopId = newId;
+    UpdateTrayIcon();
+}
+
 // 再次按同一数字 → 回到上一个快照，实现 Ctrl+N 双击在最近两个工作区间切换
-static int g_prevTrayNumber = 0;
 void SwitchSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
+
+    g_windows.clear();
+    g_zOrderCounter = 0;
+    EnumWindows(EnumWindowCallback, 0);
+
+    SyncDesktopState();
 
     if (slot == g_trayNumber) {
         slot = g_prevTrayNumber;
         if (slot == g_trayNumber) return;
     }
-
-    g_windows.clear();
-    g_zOrderCounter = 0;
-    EnumWindows(EnumWindowCallback, 0);
 
     SaveSnapshot(g_trayNumber, g_windows);
 
