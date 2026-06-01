@@ -229,6 +229,7 @@ void RestoreSnapshot(int num) {
 
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
 
+    // Version 2: 使用 SetWindowPlacement 直接设置位置和显示状态
     // 第一步：恢复窗口状态（位置 + 最小化/最大化/还原）
     //
     // 将位置和 Z 序分成两步的原因：SetWindowPlacement 能原子地设置位置
@@ -238,36 +239,70 @@ void RestoreSnapshot(int num) {
     // 最小化→最大化跨进程窗口时，直接 SetWindowPlacement(SW_MAXIMIZE)
     // 可能渲染异常（只显示还原尺寸的左上角，其余透明），所以拆成两步
     // 先 SW_SHOWNOACTIVATE 还原，再 ShowWindow 最大化
-    for (size_t i = 0; i < wins.size(); i++) {
-        const auto& w = wins[i];
-        if (!IsWindow(w.hwnd)) {
-            LOG("[恢复] [%zu] 窗口已销毁，跳过", i);
-            continue;
+    // for (size_t i = 0; i < wins.size(); i++) {
+    //     const auto& w = wins[i];
+    //     if (!IsWindow(w.hwnd)) {
+    //         LOG("[恢复] [%zu] 窗口已销毁，跳过", i);
+    //         continue;
+    //     }
+    //     RECT r = w.rect;
+    //     long ww = r.right - r.left;
+    //     long wh = r.bottom - r.top;
+    //     EnsureRectVisible(r, ww, wh);
+
+    //     BOOL iconic = IsIconic(w.hwnd);
+    //     const char* showCmdStr = w.showCmd == SW_MAXIMIZE   ? "最大化"
+    //                              : w.showCmd == SW_MINIMIZE ? "最小化"
+    //                                                         : "正常";
+    //     LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
+    //         "%ldx%ld",
+    //         i, w.title.c_str(), iconic, showCmdStr, r.left, r.top, r.right,
+    //         r.bottom, ww, wh);
+
+    //     WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
+    //     wp.rcNormalPosition = r;
+    //     if (w.showCmd != SW_MINIMIZE && iconic) {
+    //         LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s", i,
+    //             showCmdStr);
+    //         wp.showCmd = SW_SHOWNOACTIVATE;
+    //         SetWindowPlacement(w.hwnd, &wp);
+    //         // ShowWindow(w.hwnd, w.showCmd);
+    //     } else {
+    //         wp.showCmd = w.showCmd;
+    //         SetWindowPlacement(w.hwnd, &wp);
+    //     }
+    // }
+    //
+    // Version 1: 使用 ShowWindow 的 SW_RESTORE 先还原，再应用目标状态
+    // for (const auto& w : wins) {
+    //     if (!IsWindow(w.hwnd)) continue;
+    //     WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
+    //     wp.showCmd = w.showCmd;
+    //     wp.rcNormalPosition = w.rect;
+    //     // ptMinPosition / ptMaxPosition 置零，由系统自己计算
+    //     SetWindowPlacement(w.hwnd, &wp);
+    // }
+    // 使用 ShowWindow 的 SW_RESTORE 先还原，再应用目标状态
+
+    // Now: 先还原，再应用目标状态
+    for (const auto& w : wins) {
+        if (!IsWindow(w.hwnd)) continue;
+
+        // 如果窗口当前是最小化，先还原
+        if (IsIconic(w.hwnd)) {
+            ShowWindow(w.hwnd, SW_RESTORE);
         }
-        RECT r = w.rect;
-        long ww = r.right - r.left;
-        long wh = r.bottom - r.top;
-        EnsureRectVisible(r, ww, wh);
 
-        BOOL iconic = IsIconic(w.hwnd);
-        const char* showCmdStr = w.showCmd == SW_MAXIMIZE   ? "最大化"
-                                 : w.showCmd == SW_MINIMIZE ? "最小化"
-                                                            : "正常";
-        LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
-            "%ldx%ld",
-            i, w.title.c_str(), iconic, showCmdStr, r.left, r.top, r.right,
-            r.bottom, ww, wh);
-
-        WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
-        wp.rcNormalPosition = r;
-        if (w.showCmd != SW_MINIMIZE && iconic) {
-            LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s", i,
-                showCmdStr);
-            wp.showCmd = SW_SHOWNOACTIVATE;
-            SetWindowPlacement(w.hwnd, &wp);
-            ShowWindow(w.hwnd, w.showCmd);
+        // 然后设置目标状态
+        if (w.showCmd == SW_MAXIMIZE) {
+            ShowWindow(w.hwnd, SW_MAXIMIZE);
+        } else if (w.showCmd == SW_MINIMIZE) {
+            ShowWindow(w.hwnd, SW_MINIMIZE);
         } else {
-            wp.showCmd = w.showCmd;
+            // 正常状态：可能需要调整位置
+            WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
+            wp.showCmd = SW_SHOWNORMAL;
+            wp.rcNormalPosition = w.rect;
             SetWindowPlacement(w.hwnd, &wp);
         }
     }
