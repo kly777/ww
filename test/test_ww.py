@@ -513,6 +513,90 @@ class TestRandomized:
         for p, h in notepads:
             close_notepad(proc=p, hwnd=h)
 
+    def test_repeated_swap(self, ww_process):
+        """Repeatedly save/restore between two slots.
+
+        Flow:
+          1. capture initial state S0, Ctrl+0 saves S0 to slot 1.
+          2. randomize → S1, Ctrl+1 saves S1 to slot 0, restores S0.  Verify S0.
+          3. randomize → S2, Ctrl+0 saves S2 to slot 1, restores S1.  Verify S1.
+          4. randomize → S3, Ctrl+1 saves S3 to slot 0, restores S2.  Verify S2.
+          …repeat for ROUNDS cycles.
+        """
+        random.seed(99)
+        N = random.randint(4, 7)
+        ROUNDS = 5
+
+        notepads = []
+        for _ in range(N):
+            p = launch_notepad()
+            h = wait_for_notepad()
+            if h:
+                notepads.append((p, h))
+        assert len(notepads) >= 3, f"need ≥3 notepads, got {len(notepads)}"
+        time.sleep(0.5)
+
+        hwnds = [h for _, h in notepads]
+
+        def capture():
+            s = {}
+            for _, h in notepads:
+                s[h] = win32gui.GetWindowPlacement(h)
+            return s, self._zorder_of(hwnds)
+
+        all_states: list[tuple[dict, list[int]]] = [capture()]
+        press_ctrl_number(0)
+
+        sw = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+        sh = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+
+        for rnd in range(ROUNDS):
+            for _, h in notepads:
+                w = random.randint(300, 600)
+                ht = random.randint(200, 400)
+                x = random.randint(0, max(0, sw - w))
+                y = random.randint(0, max(0, sh - ht))
+                st_choice = random.randint(0, 2)
+                state = [win32con.SW_SHOWNORMAL, win32con.SW_MINIMIZE,
+                         win32con.SW_MAXIMIZE][st_choice]
+                p = win32gui.GetWindowPlacement(h)
+                win32gui.SetWindowPlacement(
+                    h, (p[0], state, p[2], p[3], (x, y, x + w, y + ht)))
+                time.sleep(0.2)
+
+            random.shuffle(hwnds)
+            for h in hwnds:
+                win32gui.SetWindowPos(h, win32con.HWND_TOP, 0, 0, 0, 0,
+                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE |
+                                      win32con.SWP_NOACTIVATE)
+                time.sleep(0.05)
+
+            all_states.append(capture())
+
+            slot = 1 if rnd % 2 == 0 else 0
+            press_ctrl_number(slot)
+
+            exp_placements, exp_z = all_states[rnd]
+            for _, h in notepads:
+                actual = win32gui.GetWindowPlacement(h)
+                exp = exp_placements[h]
+                assert actual[1] == exp[1], \
+                    f"rnd={rnd} showCmd mismatch hwnd={h}"
+                for j in range(4):
+                    assert abs(actual[4][j] - exp[4][j]) <= 2, \
+                        f"rnd={rnd} normalRect[{j}] hwnd={h}: exp={exp[4][j]} got={actual[4][j]}"
+
+            actual_z = self._zorder_of(hwnds)
+            if rnd == 0:
+                assert actual_z == exp_z, \
+                    f"rnd=0 Z-order mismatch\n  exp: {exp_z}\n  got: {actual_z}"
+            else:
+                assert set(actual_z) == set(exp_z), \
+                    f"rnd={rnd} Z-order window-set mismatch"
+
+        for p, h in notepads:
+            close_notepad(proc=p, hwnd=h)
+
 
 class TestCleanup:
     """Resource cleanup."""
