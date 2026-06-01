@@ -284,10 +284,6 @@ void RestoreSnapshot(int num) {
     // }
     // 使用 ShowWindow 的 SW_RESTORE 先还原，再应用目标状态
 
-    std::sort(wins.begin(), wins.end(), [](const WinInfo& a, const WinInfo& b) {
-        return a.zOrder < b.zOrder;
-    });
-    // Now: 先还原，再应用目标状态
     for (const auto& w : wins) {
         if (!IsWindow(w.hwnd)) continue;
 
@@ -298,9 +294,9 @@ void RestoreSnapshot(int num) {
 
         // 然后设置目标状态
         if (w.showCmd == SW_MAXIMIZE) {
-            ShowWindow(w.hwnd, SW_SHOWMAXIMIZED);
+            ShowWindow(w.hwnd, SW_MAXIMIZE);
         } else if (w.showCmd == SW_MINIMIZE) {
-            ShowWindow(w.hwnd, SW_SHOWMINIMIZED);
+            ShowWindow(w.hwnd, SW_MINIMIZE);
         } else {
             // 正常状态：可能需要调整位置
             WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
@@ -308,16 +304,18 @@ void RestoreSnapshot(int num) {
             wp.rcNormalPosition = w.rect;
             SetWindowPlacement(w.hwnd, &wp);
         }
-
     }
 
     // 第二步：按 zOrder 恢复 Z 序
     // 排序后从 HWND_BOTTOM 开始逐个往上叠，恢复原始前后关系
+    std::sort(wins.begin(), wins.end(), [](const WinInfo& a, const WinInfo& b) {
+        return a.zOrder < b.zOrder;
+    });
 
     if (!wins.empty()) {
         HDWP hdwp = BeginDeferWindowPos((int)wins.size());
         if (hdwp) {
-            HWND after = HWND_TOP;
+            HWND after = HWND_BOTTOM;
             for (const auto& w : wins) {
                 if (!IsWindow(w.hwnd)) continue;
                 // SWP_NOMOVE | SWP_NOSIZE: 位置和大小已由 SetWindowPlacement
