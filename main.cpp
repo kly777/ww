@@ -316,6 +316,7 @@ void RestoreSnapshot(int num) {
     });
 
     if (!wins.empty()) {
+        HWND hwndTop = wins[0].hwnd;
         HDWP hdwp = BeginDeferWindowPos((int)wins.size());
         if (hdwp) {
             HWND after = HWND_BOTTOM;
@@ -331,6 +332,7 @@ void RestoreSnapshot(int num) {
             }
             if (hdwp) EndDeferWindowPos(hdwp);
         }
+        SetForegroundWindow(hwndTop);
     }
 
     // 恢复动画设置

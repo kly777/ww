@@ -3,4 +3,4 @@
 #define WW_VERSION_MAJOR 1
 #define WW_VERSION_MINOR 0
 
-#define WW_VERSION_STR "1.0"
+#define WW_VERSION_STR "1.1"
