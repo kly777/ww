@@ -55,10 +55,14 @@ static const int kNavMap[10][4] = {
 #ifdef RELEASE
 #define LOG(fmt, ...) ((void)0)
 #else
-#define LOG(fmt, ...)               \
-    do {                            \
-        printf(fmt, ##__VA_ARGS__); \
-        fflush(stdout);             \
+#define LOG(fmt, ...)                           \
+    do {                                        \
+        printf(fmt, ##__VA_ARGS__);             \
+        if (g_logFile) {                        \
+            fprintf(g_logFile, fmt, ##__VA_ARGS__); \
+            fflush(g_logFile);                  \
+        }                                       \
+        fflush(stdout);                         \
     } while (0)
 #endif
 
@@ -98,6 +102,7 @@ static std::map<GUID, DesktopState, GuidLess> g_desktopStates;
 static GUID g_currentDesktopId = GUID_NULL;
 
 static HWND g_hWnd = NULL;
+static FILE* g_logFile = NULL;  // 文件日志句柄，仅 #ifndef RELEASE 有效
 
 // ---- 工具函数 ----
 std::string WideToUtf8(const wchar_t* src) {
@@ -732,6 +737,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             nid.hWnd = hwnd;
             nid.uID = kIdTrayIcon;
             Shell_NotifyIconW(NIM_DELETE, &nid);
+#ifndef RELEASE
+            if (g_logFile) {
+                fclose(g_logFile);
+                g_logFile = NULL;
+            }
+#endif
             PostQuitMessage(0);
             return 0;
         }
@@ -811,6 +822,18 @@ int main() {
 #endif
     HINSTANCE hInst = GetModuleHandle(NULL);
 
+#ifndef RELEASE
+    // 初始化文件日志：输出到同目录下的 ww.log
+    wchar_t logPath[MAX_PATH];
+    GetModuleFileNameW(NULL, logPath, MAX_PATH);
+    wchar_t* lastSlash = wcsrchr(logPath, L'\\');
+    if (lastSlash) {
+        *(lastSlash + 1) = L'\0';
+        wcscat(logPath, L"ww.log");
+        g_logFile = _wfopen(logPath, L"a");
+    }
+#endif
+
     InitVirtualDesktopManager();
 
     if (!CreateMessageWindow(hInst)) {
@@ -830,5 +853,8 @@ int main() {
     }
 
     CleanupVirtualDesktopManager();
+#ifndef RELEASE
+    if (g_logFile) fclose(g_logFile);
+#endif
     return 0;
 }
