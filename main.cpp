@@ -829,8 +829,8 @@ int main() {
     wchar_t* lastSlash = wcsrchr(logPath, L'\\');
     if (lastSlash) {
         *(lastSlash + 1) = L'\0';
-        wcscat(logPath, L"ww.log");
-        g_logFile = _wfopen(logPath, L"a");
+        wcscat_s(logPath, MAX_PATH, L"ww.log");
+        _wfopen_s(&g_logFile, logPath, L"a");
     }
 #endif
 
