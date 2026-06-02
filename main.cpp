@@ -29,10 +29,10 @@ enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 #ifdef RELEASE
 #define LOG(fmt, ...) ((void)0)
 #else
-#define LOG(fmt, ...)             \
-    do {                          \
+#define LOG(fmt, ...)               \
+    do {                            \
         printf(fmt, ##__VA_ARGS__); \
-        fflush(stdout);           \
+        fflush(stdout);             \
     } while (0)
 #endif
 
