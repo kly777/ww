@@ -96,32 +96,32 @@ def find_ww_hwnd() -> Optional[int]:
             win32gui.EnumWindows(cb, 0)
             break
         except Exception:
-            time.sleep(0.3)
+            time.sleep(0.15)
     return found[0] if found[0] else None
 
 
-def press_ctrl_number(num: int, post_delay: float = 1.5):
+def press_ctrl_number(num: int, post_delay: float = 0.8):
     assert 0 <= num <= 9
     test_log.info("Ctrl+%d", num)
     vk = 0x30 + num
 
-    # 可选：先将 ww 窗口置前（可能提高热键响应）
     ww_hwnd = find_ww_hwnd()
     if ww_hwnd:
         try:
             win32gui.SetForegroundWindow(ww_hwnd)
-            time.sleep(0.1)
+            time.sleep(0.05)
         except:
             pass
 
-    win32api.keybd_event(0x11, 0, 0, 0)          # Ctrl down
-    time.sleep(0.1)
-    win32api.keybd_event(vk, 0, 0, 0)             # Digit down
-    time.sleep(0.1)
-    win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)  # Digit up
-    time.sleep(0.1)
-    win32api.keybd_event(0x11, 0, win32con.KEYEVENTF_KEYUP, 0) # Ctrl up
-    time.sleep(post_delay)                        # 足够长的后置等待
+    delay = 0.05
+    win32api.keybd_event(0x11, 0, 0, 0)
+    time.sleep(delay)
+    win32api.keybd_event(vk, 0, 0, 0)
+    time.sleep(delay)
+    win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+    time.sleep(delay)
+    win32api.keybd_event(0x11, 0, win32con.KEYEVENTF_KEYUP, 0)
+    time.sleep(post_delay)
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ def create_notepad(timeout: float = 8.0) -> tuple[int, subprocess.Popen]:
         new_hwnds = current - existing
         if new_hwnds:
             hwnd = next(iter(new_hwnds))
-            time.sleep(0.6)
+            time.sleep(0.15)
             return hwnd, proc
         time.sleep(0.25)
     proc.kill()
@@ -177,7 +177,7 @@ def create_notepad_many(n: int) -> list[tuple[int, subprocess.Popen]]:
         x, y = 100 + i * 60, 100 + i * 60
         win32gui.SetWindowPos(hwnd, 0, x, y, w, h, 0)
         result.append((hwnd, proc))
-    time.sleep(0.5)
+    time.sleep(0.2)
     return result
 
 
@@ -211,7 +211,7 @@ def ww_process():
         hwnd = find_ww_hwnd()
         if hwnd:
             break
-        time.sleep(0.3)
+        time.sleep(0.15)
     else:
         proc.kill()
         raise RuntimeError("ww_dev.exe failed to create WW_TrayWindow")
@@ -246,7 +246,7 @@ class TestLaunch:
 
     def test_single_instance(self, ww_process):
         p2 = subprocess.Popen([WW_EXE])
-        time.sleep(0.5)
+        time.sleep(0.25)
         assert p2.poll() is not None, "second instance did not exit"
 
     def test_tray_icon_created(self, ww_process):
@@ -264,7 +264,7 @@ class TestSnapshotBasic:
         press_ctrl_number(0)
         win32gui.SetWindowPos(hwnd, 0, rect[0] + 100, rect[1] + 100,
                               w, h, win32con.SWP_NOZORDER)
-        time.sleep(0.3)
+        time.sleep(0.15)
         press_ctrl_number(1)
 
         assert win32gui.GetWindowRect(hwnd) == rect
@@ -280,7 +280,7 @@ class TestSnapshotBasic:
         pos1 = (rect[0] + 150, rect[1] + 150)
         win32gui.SetWindowPos(hwnd, 0, pos1[0], pos1[1], w, h,
                               win32con.SWP_NOZORDER)
-        time.sleep(0.3)
+        time.sleep(0.15)
 
         press_ctrl_number(1)
         assert win32gui.GetWindowRect(hwnd) == rect
@@ -303,7 +303,7 @@ class TestSnapshotBasic:
             win32gui.SetWindowPos(h, 0, r[0] + dx, r[1] + dy,
                                   r[2] - r[0], r[3] - r[1],
                                   win32con.SWP_NOZORDER)
-        time.sleep(0.3)
+        time.sleep(0.15)
 
         press_ctrl_number(1)
 
@@ -330,7 +330,7 @@ class TestWindowState:
         press_ctrl_number(0)
 
         win32gui.ShowWindow(hwnd, target_state)
-        time.sleep(0.5)
+        time.sleep(0.4)
         assert is_in_state(hwnd), f"should be {switch_to}"
 
         press_ctrl_number(1)
@@ -361,7 +361,7 @@ class TestSnapshotSlots:
 
         p1 = (r0[0] + 80, r0[1] + 80)
         win32gui.SetWindowPos(hwnd, 0, p1[0], p1[1], w, h, 0)
-        time.sleep(0.3)
+        time.sleep(0.15)
 
         # save p1 to slot 2 via Ctrl+3 (tray=2 → saves to slot 2)
         press_ctrl_number(3)
@@ -369,7 +369,7 @@ class TestSnapshotSlots:
 
         # move to random
         win32gui.SetWindowPos(hwnd, 0, r0[0] + 200, r0[1] + 200, w, h, 0)
-        time.sleep(0.3)
+        time.sleep(0.15)
 
         # restore slot 1 (r0)
         press_ctrl_number(1)
@@ -377,7 +377,7 @@ class TestSnapshotSlots:
 
         # move to another random
         win32gui.SetWindowPos(hwnd, 0, r0[0] + 300, r0[1] + 300, w, h, 0)
-        time.sleep(0.3)
+        time.sleep(0.15)
 
         # restore slot 2 (p1)
         press_ctrl_number(2)
@@ -412,7 +412,7 @@ class TestRandomized:
                                 win32con.SW_MINIMIZE,
                                 win32con.SW_MAXIMIZE])
             _set_placement(h, st, (x, y, x + w, y + ht))
-            time.sleep(0.3)
+            time.sleep(0.15)
 
         random.shuffle(hwnds)
         for h in hwnds:
@@ -420,7 +420,7 @@ class TestRandomized:
                                   win32con.SWP_NOMOVE | win32con.SWP_NOSIZE |
                                   win32con.SWP_NOACTIVATE)
             time.sleep(0.05)
-        time.sleep(0.5)
+        time.sleep(0.25)
         press_ctrl_number(1)
 
         for h in hwnds:
@@ -447,7 +447,7 @@ class TestCleanup:
         ww_process.wait(timeout=5)
 
         p2 = subprocess.Popen([WW_EXE])
-        time.sleep(0.5)
+        time.sleep(0.25)
         hwnd = find_ww_hwnd()
         assert hwnd is not None, "second instance failed after cleanup"
         win32gui.PostMessage(hwnd, win32con.WM_DESTROY, 0, 0)

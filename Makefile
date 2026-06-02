@@ -1,4 +1,4 @@
-.PHONY: all clean dev release fmt
+.PHONY: all clean dev release fmt test test-quick test-one
 
 CXX      := g++
 WINDRES  := windres
@@ -24,6 +24,12 @@ $(BUILDDIR)/ww.exe: $(SRC) $(BUILDDIR)/version.o version.h | $(BUILDDIR)
 
 test: $(BUILDDIR)/ww_dev.exe
 	cd test && uv run pytest -v
+
+test-quick: $(BUILDDIR)/ww_dev.exe
+	cd test && uv run pytest -q
+
+test-one: $(BUILDDIR)/ww_dev.exe
+	cd test && uv run pytest -v -k "$(TEST)"
 
 dev: $(BUILDDIR)/ww_dev.exe
 	./$(BUILDDIR)/ww_dev.exe
