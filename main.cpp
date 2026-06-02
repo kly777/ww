@@ -23,7 +23,13 @@ constexpr UINT WM_TRAYICON = WM_APP + 1;
 // 推迟到消息循环启动后再执行
 constexpr UINT WM_INIT_TRAY = WM_APP + 2;
 constexpr UINT kIdTrayIcon = 1;
-enum class HotkeyId : int { Digit = 0, ArrowUp = 10, ArrowDown, ArrowLeft, ArrowRight };
+enum class HotkeyId : int {
+    Digit = 0,
+    ArrowUp = 10,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight
+};
 enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 
 // 九宫格导航: 数字→(row,col), 箭头方向
@@ -34,16 +40,16 @@ enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 // kNavMap[当前slit][0=Up 1=Down 2=Left 3=Right] = 目标slot (相同=不动)
 static const int kNavMap[10][4] = {
     // Up Dn Lt Rt
-    { 8,  2, 7, 9 },  // 0: 只有上→8
-    { 7,  4, 3, 2 },  // 1
-    { 0,  5, 1, 3 },  // 2
-    { 9,  6, 2, 1 },  // 3
-    { 1,  7, 6, 5 },  // 4
-    { 2,  8, 4, 6 },  // 5
-    { 3,  9, 5, 4 },  // 6
-    { 4,  1, 9, 8 },  // 7
-    { 5,  0, 7, 9 },  // 8
-    { 6,  3, 8, 7 },  // 9
+    {8, 2, 7, 9},  // 0: 只有上→8
+    {7, 4, 3, 2},  // 1
+    {0, 5, 1, 3},  // 2
+    {9, 6, 2, 1},  // 3
+    {1, 7, 6, 5},  // 4
+    {2, 8, 4, 6},  // 5
+    {3, 9, 5, 4},  // 6
+    {4, 1, 9, 8},  // 7
+    {5, 0, 7, 9},  // 8
+    {6, 3, 8, 7},  // 9
 };
 
 #ifdef RELEASE
@@ -238,14 +244,22 @@ void RestoreSnapshot(int num) {
     // 将当前可见窗口中"不在目标快照里"的全部最小化
     for (const auto& w : g_windows) {
         auto it =
-            std::find_if(snap.windows.begin(), snap.windows.end(),
+            std::find_if(wins.begin(), wins.end(),
                          [&](const WinInfo& sw) { return sw.hwnd == w.hwnd; });
-        if (it == snap.windows.end()) {
+        if (it == wins.end()) {
             ShowWindow(w.hwnd, SW_MINIMIZE);
         }
     }
 
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
+    // 打印快照原始数据，便于诊断"恢复与保存不一致"问题
+    for (size_t i = 0; i < wins.size(); i++) {
+        const auto& w = wins[i];
+        LOG("[快照数据] [%zu] \"%s\" showCmd=%u rect=(%ld,%ld,%ld,%ld) "
+            "zOrder=%u\n",
+            i, w.title.c_str(), w.showCmd, w.rect.left, w.rect.top,
+            w.rect.right, w.rect.bottom, w.zOrder);
+    }
 
     // Version 2: 使用 SetWindowPlacement 直接设置位置和显示状态
     // 第一步：恢复窗口状态（位置 + 最小化/最大化/还原）
@@ -329,16 +343,19 @@ void RestoreSnapshot(int num) {
 
     // 第二步：按 zOrder 恢复 Z 序
     // 排序后从 HWND_BOTTOM 开始逐个往上叠，恢复原始前后关系
-    std::sort(wins.begin(), wins.end(), [](const WinInfo& a, const WinInfo& b) {
-        return a.zOrder < b.zOrder;
-    });
+    // 注意：必须在副本上排序，不能直接修改 snap.windows，
+    // 否则会永久破坏已保存快照的窗口顺序
+    std::vector<WinInfo> sortedWins = wins;
+    std::sort(
+        sortedWins.begin(), sortedWins.end(),
+        [](const WinInfo& a, const WinInfo& b) { return a.zOrder < b.zOrder; });
 
-    if (!wins.empty()) {
-        HWND hwndTop = wins[0].hwnd;
-        HDWP hdwp = BeginDeferWindowPos((int)wins.size());
+    if (!sortedWins.empty()) {
+        HWND hwndTop = sortedWins[0].hwnd;
+        HDWP hdwp = BeginDeferWindowPos((int)sortedWins.size());
         if (hdwp) {
             HWND after = HWND_BOTTOM;
-            for (const auto& w : wins) {
+            for (const auto& w : sortedWins) {
                 if (!IsWindow(w.hwnd)) continue;
                 // SWP_NOMOVE | SWP_NOSIZE: 位置和大小已由 SetWindowPlacement
                 // 设置好了，这里只修 Z 序
@@ -525,8 +542,7 @@ HICON MakeTrayIcon(int number) {
     // 背景填充只写了 RGB 没写 A，这里补上
     if (bits) {
         BYTE* pixel = (BYTE*)bits;
-        for (int i = 0; i < kIconSize * kIconSize; i++)
-            pixel[i * 4 + 3] = 0xFF;
+        for (int i = 0; i < kIconSize * kIconSize; i++) pixel[i * 4 + 3] = 0xFF;
     }
 
     // 掩码位图：全白代表图标完全不透明，CreateIconIndirect 同时需要
@@ -672,8 +688,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int dir = id - static_cast<int>(HotkeyId::ArrowUp);
                 if (dir >= 0 && dir <= 3) {
                     int target = kNavMap[g_trayNumber][dir];
-                    if (target != g_trayNumber)
-                        SwitchSnapshot(target);
+                    if (target != g_trayNumber) SwitchSnapshot(target);
                 }
             }
             return 0;
@@ -748,7 +763,8 @@ int main() {
     }
 
     LOG("\n=== 托盘图标已创建 ===\n");
-    LOG("Ctrl+0~9 切换九宫格 | Ctrl+Alt+方向键 在格子间移动 | 右键托盘选择数字或退出\n\n");
+    LOG("Ctrl+0~9 切换九宫格 | Ctrl+Alt+方向键 在格子间移动 | "
+        "右键托盘选择数字或退出\n\n");
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
