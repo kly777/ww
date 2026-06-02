@@ -23,8 +23,28 @@ constexpr UINT WM_TRAYICON = WM_APP + 1;
 // 推迟到消息循环启动后再执行
 constexpr UINT WM_INIT_TRAY = WM_APP + 2;
 constexpr UINT kIdTrayIcon = 1;
-enum class HotkeyId : int { Base = 0 };
+enum class HotkeyId : int { Digit = 0, ArrowUp = 10, ArrowDown, ArrowLeft, ArrowRight };
 enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
+
+// 九宫格导航: 数字→(row,col), 箭头方向
+//  1 2 3
+//  4 5 6
+//  7 8 9
+//    0
+// kNavMap[当前slit][0=Up 1=Down 2=Left 3=Right] = 目标slot (相同=不动)
+static const int kNavMap[10][4] = {
+    // Up Dn Lt Rt
+    { 8,  2, 7, 9 },  // 0: 只有上→8
+    { 7,  4, 3, 2 },  // 1
+    { 0,  5, 1, 3 },  // 2
+    { 9,  6, 2, 1 },  // 3
+    { 1,  7, 6, 5 },  // 4
+    { 2,  8, 4, 6 },  // 5
+    { 3,  9, 5, 4 },  // 6
+    { 4,  1, 9, 8 },  // 7
+    { 5,  0, 7, 9 },  // 8
+    { 6,  3, 8, 7 },  // 9
+};
 
 #ifdef RELEASE
 #define LOG(fmt, ...) ((void)0)
@@ -544,19 +564,30 @@ void UpdateTrayIcon() {
 }
 
 void RegisterHotkeys(HWND hwnd) {
-    // MOD_NOREPEAT: 按住不放只触发一次
     for (int i = 0; i <= 9; i++) {
-        if (!RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i,
+        if (!RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Digit) + i,
                             MOD_CONTROL | MOD_NOREPEAT, '0' + i)) {
             LOG("[!] 注册热键 Ctrl+%d 失败 (错误码: %lu)\n", i, GetLastError());
         }
     }
+    RegisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowUp),
+                   MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_UP);
+    RegisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowDown),
+                   MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_DOWN);
+    RegisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowLeft),
+                   MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_LEFT);
+    RegisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowRight),
+                   MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_RIGHT);
 }
 
 void UnregisterHotkeys(HWND hwnd) {
     for (int i = 0; i <= 9; i++) {
-        UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::Base) + i);
+        UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::Digit) + i);
     }
+    UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowUp));
+    UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowDown));
+    UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowLeft));
+    UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowRight));
 }
 
 // ---- 开机启动 ----
@@ -620,8 +651,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_HOTKEY: {
-            int key = (int)wParam - static_cast<int>(HotkeyId::Base);
-            if (key >= 0 && key <= 9) SwitchSnapshot(key);
+            int id = (int)wParam;
+            int slot = id - static_cast<int>(HotkeyId::Digit);
+            if (slot >= 0 && slot <= 9) {
+                SwitchSnapshot(slot);
+            } else {
+                int dir = id - static_cast<int>(HotkeyId::ArrowUp);
+                if (dir >= 0 && dir <= 3) {
+                    int target = kNavMap[g_trayNumber][dir];
+                    if (target != g_trayNumber)
+                        SwitchSnapshot(target);
+                }
+            }
             return 0;
         }
 
@@ -694,7 +735,7 @@ int main() {
     }
 
     LOG("\n=== 托盘图标已创建 ===\n");
-    LOG("Ctrl+0~Ctrl+9 切换托盘数字 | 右键托盘图标选择数字或退出\n\n");
+    LOG("Ctrl+0~9 切换九宫格 | Ctrl+Alt+方向键 在格子间移动 | 右键托盘选择数字或退出\n\n");
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
