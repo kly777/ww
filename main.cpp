@@ -8,6 +8,7 @@
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <stdio.h>
+#include <io.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -823,14 +824,23 @@ int main() {
     HINSTANCE hInst = GetModuleHandle(NULL);
 
 #ifndef RELEASE
-    // 初始化文件日志：输出到同目录下的 ww.log
+    // 初始化文件日志：输出到 exe 同目录下的 ww.log
+    // 使用共享读写模式打开，允许外部（如测试脚本）同时读取日志
     wchar_t logPath[MAX_PATH];
     GetModuleFileNameW(NULL, logPath, MAX_PATH);
     wchar_t* lastSlash = wcsrchr(logPath, L'\\');
     if (lastSlash) {
         *(lastSlash + 1) = L'\0';
         wcscat_s(logPath, MAX_PATH, L"ww.log");
-        _wfopen_s(&g_logFile, logPath, L"a");
+        HANDLE hFile = CreateFileW(logPath, FILE_APPEND_DATA,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                   NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            int fd = _open_osfhandle((intptr_t)hFile, 0);
+            if (fd != -1)
+                g_logFile = _fdopen(fd, "a");
+        }
     }
 #endif
 
