@@ -65,7 +65,6 @@ struct WinInfo {
 };
 
 struct Snapshot {
-    BOOL hasData = FALSE;
     std::vector<WinInfo> windows;
 };
 
@@ -185,7 +184,6 @@ void SaveSnapshot(int num, const std::vector<WinInfo>& windows) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
     snap.windows = windows;
-    snap.hasData = TRUE;
     LOG("[快照] 保存 %d 个窗口到数字 %d\n", (int)snap.windows.size(), num);
     for (size_t i = 0; i < windows.size(); i++) {
         const auto& w = windows[i];
@@ -224,10 +222,6 @@ void EnsureRectVisible(RECT& rect, int width, int height) {
 void RestoreSnapshot(int num) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
-    if (!snap.hasData) {
-        LOG("[快照] 数字 %d 无快照，跳过恢复\n", num);
-        return;
-    }
 
     // 临时禁用窗口最小化/还原动画，让批量恢复像瞬间切换而非逐个动画
     ANIMATIONINFO ai = {sizeof(ANIMATIONINFO)};
