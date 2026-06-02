@@ -22,8 +22,8 @@ $(BUILDDIR)/ww_dev.exe: $(SRC) version.h | $(BUILDDIR)
 $(BUILDDIR)/ww.exe: $(SRC) $(BUILDDIR)/version.o version.h | $(BUILDDIR)
 	$(CXX) -std=c++17 $(CXXFLAGS) -mwindows -o $@ $(SRC) $(BUILDDIR)/version.o $(LIBS)
 
-test: $(BUILDDIR)/ww.exe
-	uv run pytest -v
+test: $(BUILDDIR)/ww_dev.exe
+	cd test && uv run pytest -v
 
 dev: $(BUILDDIR)/ww_dev.exe
 	./$(BUILDDIR)/ww_dev.exe
