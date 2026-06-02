@@ -251,6 +251,7 @@ void RestoreSnapshot(int num) {
         }
     }
 
+#ifndef RELEASE
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
     // 打印快照原始数据，便于诊断"恢复与保存不一致"问题
     for (size_t i = 0; i < wins.size(); i++) {
@@ -260,6 +261,7 @@ void RestoreSnapshot(int num) {
             i, w.title.c_str(), w.showCmd, w.rect.left, w.rect.top,
             w.rect.right, w.rect.bottom, w.zOrder);
     }
+#endif
 
     // Version 2: 使用 SetWindowPlacement 直接设置位置和显示状态
     // 第一步：恢复窗口状态（位置 + 最小化/最大化/还原）
@@ -375,6 +377,61 @@ void RestoreSnapshot(int num) {
         ai.iMinAnimate = origAnimate;
         SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
     }
+
+    // ---- 恢复后验证：对比实际窗口状态与快照数据 ----
+#ifndef RELEASE
+    LOG("[验证] 开始对比恢复结果与快照数据...\n");
+    for (size_t i = 0; i < wins.size(); i++) {
+        const auto& w = wins[i];
+        if (!IsWindow(w.hwnd)) {
+            LOG("[验证] [%zu] \"%s\" 窗口已销毁，跳过\n", i, w.title.c_str());
+            continue;
+        }
+        BOOL iconic = IsIconic(w.hwnd);
+        BOOL zoomed = IsZoomed(w.hwnd);
+        UINT actualShowCmd;
+        if (iconic)
+            actualShowCmd = SW_MINIMIZE;
+        else if (zoomed)
+            actualShowCmd = SW_MAXIMIZE;
+        else
+            actualShowCmd = SW_SHOWNORMAL;
+
+        WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
+        GetWindowPlacement(w.hwnd, &wp);
+        RECT actualRect = wp.rcNormalPosition;
+
+        const char* expectedStr = w.showCmd == SW_MAXIMIZE   ? "最大化"
+                                  : w.showCmd == SW_MINIMIZE ? "最小化"
+                                                             : "正常";
+        const char* actualStr = actualShowCmd == SW_MAXIMIZE   ? "最大化"
+                                : actualShowCmd == SW_MINIMIZE ? "最小化"
+                                                               : "正常";
+
+        bool showCmdMatch = (w.showCmd == actualShowCmd);
+        bool rectMatch = (w.rect.left == actualRect.left &&
+                          w.rect.top == actualRect.top &&
+                          w.rect.right == actualRect.right &&
+                          w.rect.bottom == actualRect.bottom);
+
+        if (!showCmdMatch) {
+            LOG("[验证] [!] [%zu] \"%s\" 状态不一致! 期望=%s(%u) 实际=%s(%u)\n",
+                i, w.title.c_str(), expectedStr, w.showCmd, actualStr,
+                actualShowCmd);
+        }
+        if (!rectMatch) {
+            LOG("[验证] [!] [%zu] \"%s\" 位置不一致! 期望=(%ld,%ld,%ld,%ld) "
+                "实际=(%ld,%ld,%ld,%ld)\n",
+                i, w.title.c_str(), w.rect.left, w.rect.top, w.rect.right,
+                w.rect.bottom, actualRect.left, actualRect.top,
+                actualRect.right, actualRect.bottom);
+        }
+        if (showCmdMatch && rectMatch) {
+            LOG("[验证] [%zu] \"%s\" OK\n", i, w.title.c_str());
+        }
+    }
+    LOG("[验证] 完成\n");
+#endif
 
     LOG("[恢复] 完成\n");
 }
