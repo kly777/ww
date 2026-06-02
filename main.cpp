@@ -479,7 +479,27 @@ HICON MakeTrayIcon(int number) {
     HBRUSH hBrBg = CreateSolidBrush(kColors[number]);
     FillRect(memDC, &rc, hBrBg);
 
-    HPEN hPn = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    // ---- 九宫格 + 0 指示灯 ----
+    // 格子在 3x3 布局中的行列，+ 底部居中的 0
+    // {col, row}   row: 0=上 1=中 2=下 3=最下(仅0)
+    static const int kSlotCol[10] = {1, 0, 1, 2, 0, 1, 2, 0, 1, 2};
+    static const int kSlotRow[10] = {3, 0, 0, 0, 1, 1, 1, 2, 2, 2};
+
+    const int cell = 10, stride = cell;  // 10px 方块, 0px 间距
+    const int gridX = 1;
+    const int gridY = 1;
+    const int cx = gridX + kSlotCol[number] * stride;
+    const int cy = gridY + kSlotRow[number] * stride;
+
+    RECT crc = {cx, cy, cx + cell, cy + cell};
+    HBRUSH hBrNull0 = (HBRUSH)GetStockObject(NULL_BRUSH);
+    HBRUSH hOldBr0 = (HBRUSH)SelectObject(memDC, hBrNull0);
+    HBRUSH hBrBg0 = CreateSolidBrush(RGB(0,0,0));
+
+    FillRect(memDC, &crc, hBrBg0);
+    DeleteObject(hBrBg0);
+
+    HPEN hPn = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
     HBRUSH hBrNull = (HBRUSH)GetStockObject(NULL_BRUSH);
     HPEN hOldPn = (HPEN)SelectObject(memDC, hPn);
     HBRUSH hOldBr = (HBRUSH)SelectObject(memDC, hBrNull);
