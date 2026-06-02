@@ -217,11 +217,44 @@ def _log_has_warnings() -> bool:
 
 @pytest.fixture(scope="session", autouse=True)
 def _warmup_notepad():
-    """预热：启动并关闭一个 notepad，让后续 notepad 启动更快。
-    避免第一个 notepad 因加载慢导致 ww 的 EnumWindows 错过它。"""
+    """预热 + 清理残留：杀掉所有残留 notepad，然后启动一个预热。"""
+    # 先清理之前测试可能泄漏的 notepad 进程
+    for p in psutil.process_iter(["pid", "name"]):
+        try:
+            if (p.info["name"] or "").lower() == "notepad.exe":
+                p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    time.sleep(0.3)
+    # 预热启动
     hwnd, proc = create_notepad(timeout=10.0)
     close_notepad(hwnd, proc)
-    time.sleep(0.3)
+    # 确保进程确实退出
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+@pytest.fixture(autouse=True)
+def _auto_cleanup_notepads():
+    """每个测试结束后强制清理该测试创建的所有 notepad.exe 进程。
+    比手动 close_notepad 更可靠——不依赖 WM_CLOSE 响应，不会因断言失败而泄漏。"""
+    before: set[int] = set()
+    for p in psutil.process_iter(["pid", "name"]):
+        try:
+            if (p.info["name"] or "").lower() == "notepad.exe":
+                before.add(p.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    yield
+    for p in psutil.process_iter(["pid", "name"]):
+        try:
+            if (p.info["name"] or "").lower() == "notepad.exe":
+                if p.pid not in before:
+                    p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
 
 @pytest.fixture(scope="function")
