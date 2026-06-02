@@ -441,25 +441,25 @@ void SwitchSnapshot(int slot) {
 
 // ---- 生成托盘图标 ----
 HICON MakeTrayIcon(int number) {
-    int w = 32, h = 32;
+    constexpr int kIconSize = 32;
 
-    HDC hdc = GetDC(NULL);
-    HDC memDC = CreateCompatibleDC(hdc);
+    HDC hScreenDC = GetDC(NULL);
+    HDC hMemDC = CreateCompatibleDC(hScreenDC);
 
     // biHeight 为负值 = top-down DIB，此时位图数据从顶行开始排列
     // 简化后面 alpha 通道填充的寻址（bits[0] 就是第一行第一个像素）
-    BITMAPINFO bi = {};
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = kIconSize;
+    bmi.bmiHeader.biHeight = -kIconSize;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
 
     void* bits = NULL;
     HBITMAP hBmpColor =
-        CreateDIBSection(memDC, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-    HBITMAP hOldBmp = (HBITMAP)SelectObject(memDC, hBmpColor);
+        CreateDIBSection(hMemDC, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+    HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hBmpColor);
 
     static const COLORREF kColors[] = {
         RGB(180, 50, 50),   // 0 红
@@ -473,88 +473,87 @@ HICON MakeTrayIcon(int number) {
         RGB(30, 140, 210),  // 8 天蓝
         RGB(180, 160, 30),  // 9 金
     };
-    RECT rc = {0, 0, w, h};
+    const RECT rcFull = {0, 0, kIconSize, kIconSize};
 
-    // ---- 绘制 ----
-    HBRUSH hBrBg = CreateSolidBrush(kColors[number]);
-    FillRect(memDC, &rc, hBrBg);
+    // ---- 绘制背景 ----
+    HBRUSH hBrBackground = CreateSolidBrush(kColors[number]);
+    FillRect(hMemDC, &rcFull, hBrBackground);
 
-    // ---- 九宫格 + 0 指示灯 ----
-    // 格子在 3x3 布局中的行列，+ 底部居中的 0
-    // {col, row}   row: 0=上 1=中 2=下 3=最下(仅0)
-    static const int kSlotCol[10] = {1, 0, 1, 2, 0, 1, 2, 0, 1, 2};
-    static const int kSlotRow[10] = {3, 0, 0, 0, 1, 1, 1, 2, 2, 2};
+    // ---- 九宫格指示灯（底部居中为 0，其余 1-9 按 3×3 排列）----
+    // row: 0=上 1=中 2=下 3=最下(仅数字0)
+    static const int kDigitCol[10] = {1, 0, 1, 2, 0, 1, 2, 0, 1, 2};
+    static const int kDigitRow[10] = {3, 0, 0, 0, 1, 1, 1, 2, 2, 2};
 
-    const int cell = 10, stride = cell;  // 10px 方块, 0px 间距
-    const int gridX = 1;
-    const int gridY = 1;
-    const int cx = gridX + kSlotCol[number] * stride;
-    const int cy = gridY + kSlotRow[number] * stride;
+    constexpr int kCellSize = 10;
+    constexpr int kGridX = 1;
+    constexpr int kGridY = 1;
+    const int cellX = kGridX + kDigitCol[number] * kCellSize;
+    const int cellY = kGridY + kDigitRow[number] * kCellSize;
 
-    RECT crc = {cx, cy, cx + cell, cy + cell};
-    HBRUSH hBrNull0 = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HBRUSH hOldBr0 = (HBRUSH)SelectObject(memDC, hBrNull0);
-    HBRUSH hBrBg0 = CreateSolidBrush(RGB(0,0,0));
+    const RECT rcCell = {cellX, cellY, cellX + kCellSize, cellY + kCellSize};
+    HBRUSH hBrCell = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(hMemDC, &rcCell, hBrCell);
+    DeleteObject(hBrCell);
 
-    FillRect(memDC, &crc, hBrBg0);
-    DeleteObject(hBrBg0);
+    // ---- 绘制白色外框（空心矩形）----
+    HPEN hPenBorder = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+    HPEN hOldPen = (HPEN)SelectObject(hMemDC, hPenBorder);
+    HBRUSH hOldBrush = (HBRUSH)SelectObject(hMemDC, GetStockObject(NULL_BRUSH));
+    Rectangle(hMemDC, 0, 0, kIconSize, kIconSize);
 
-    HPEN hPn = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
-    HBRUSH hBrNull = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HPEN hOldPn = (HPEN)SelectObject(memDC, hPn);
-    HBRUSH hOldBr = (HBRUSH)SelectObject(memDC, hBrNull);
-    Rectangle(memDC, 0, 0, w, h);
-
-    SetBkMode(memDC, TRANSPARENT);
-    SetTextColor(memDC, RGB(255, 255, 255));
-    wchar_t num[2] = {(wchar_t)(L'0' + number), 0};
+    // ---- 绘制数字 ----
+    SetBkMode(hMemDC, TRANSPARENT);
+    SetTextColor(hMemDC, RGB(255, 255, 255));
+    const wchar_t digitText[2] = {(wchar_t)(L'0' + number), L'\0'};
     HFONT hFont = CreateFontW(34, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                               ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    HFONT hOldFont = (HFONT)SelectObject(memDC, hFont);
-    SIZE sz;
-    GetTextExtentPoint32W(memDC, num, 1, &sz);
-    TEXTMETRIC tm;
-    GetTextMetrics(memDC, &tm);
-    int y = (h - tm.tmAscent) / 2 - 5;
-    TextOutW(memDC, (w - sz.cx) / 2, y, num, 1);
+    HFONT hOldFont = (HFONT)SelectObject(hMemDC, hFont);
+    SIZE textSize;
+    GetTextExtentPoint32W(hMemDC, digitText, 1, &textSize);
+    TEXTMETRIC textMetrics;
+    GetTextMetrics(hMemDC, &textMetrics);
+    const int textY = (kIconSize - textMetrics.tmAscent) / 2 - 5;
+    TextOutW(hMemDC, (kIconSize - textSize.cx) / 2, textY, digitText, 1);
 
-    // GDI 对象在选入 DC 时不能删除 必须先逐一 SelectObject 恢复原始
+    // GDI 对象在选入 DC 时不能删除，必须先逐一 SelectObject 恢复原始
     // 对象（按入栈反序），之后再 DeleteObject 才安全
-    SelectObject(memDC, hOldFont);
-    SelectObject(memDC, hOldBr);
-    SelectObject(memDC, hOldPn);
-    SelectObject(memDC, hOldBmp);
+    SelectObject(hMemDC, hOldFont);
+    SelectObject(hMemDC, hOldBrush);
+    SelectObject(hMemDC, hOldPen);
+    SelectObject(hMemDC, hOldBmp);
 
     DeleteObject(hFont);
-    DeleteObject(hPn);
-    DeleteObject(hBrBg);
+    DeleteObject(hPenBorder);
+    DeleteObject(hBrBackground);
 
     // 填充 alpha 通道为不透明：CreateDIBSection 不会初始化像素数据，
     // 背景填充只写了 RGB 没写 A，这里补上
     if (bits) {
-        for (int i = 0; i < w * h; i++) ((BYTE*)bits)[i * 4 + 3] = 0xFF;
+        BYTE* pixel = (BYTE*)bits;
+        for (int i = 0; i < kIconSize * kIconSize; i++)
+            pixel[i * 4 + 3] = 0xFF;
     }
 
-    // 掩码位图：全白代表图标完全不透明 CreateIconIndirect 同时需要
+    // 掩码位图：全白代表图标完全不透明，CreateIconIndirect 同时需要
     // 颜色位图和掩码合成最终图标
-    HBITMAP hBmpMask = CreateBitmap(w, h, 1, 1, NULL);
-    HDC maskDC = CreateCompatibleDC(hdc);
-    HBITMAP hOldMask = (HBITMAP)SelectObject(maskDC, hBmpMask);
-    FillRect(maskDC, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
-    SelectObject(maskDC, hOldMask);
-    DeleteDC(maskDC);
+    HBITMAP hBmpMask = CreateBitmap(kIconSize, kIconSize, 1, 1, NULL);
+    HDC hMaskDC = CreateCompatibleDC(hScreenDC);
+    HBITMAP hOldMask = (HBITMAP)SelectObject(hMaskDC, hBmpMask);
+    FillRect(hMaskDC, &rcFull, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    SelectObject(hMaskDC, hOldMask);
+    DeleteDC(hMaskDC);
 
-    ICONINFO ii = {};
-    ii.fIcon = TRUE;
-    ii.hbmColor = hBmpColor;
-    ii.hbmMask = hBmpMask;
-    HICON hIcon = CreateIconIndirect(&ii);
+    ICONINFO iconInfo = {};
+    iconInfo.fIcon = TRUE;
+    iconInfo.hbmColor = hBmpColor;
+    iconInfo.hbmMask = hBmpMask;
+    HICON hIcon = CreateIconIndirect(&iconInfo);
 
     DeleteObject(hBmpMask);
     DeleteObject(hBmpColor);
-    DeleteDC(memDC);
-    ReleaseDC(NULL, hdc);
+    DeleteDC(hMemDC);
+    ReleaseDC(NULL, hScreenDC);
     return hIcon;
 }
 
