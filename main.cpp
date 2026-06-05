@@ -10,7 +10,6 @@
 #include <stdio.h>
 #include <io.h>
 #include <windows.h>
-#include <dwmapi.h>
 
 #include <algorithm>
 #include <array>
@@ -107,9 +106,8 @@ static GUID g_currentDesktopId = GUID_NULL;
 static HWND g_hWnd = NULL;
 static FILE* g_logFile = NULL;  // 文件日志句柄，仅 #ifndef RELEASE 有效
 
-// ---- DWM 缩略图预览 ----
+// ---- 工作区总览预览 ----
 static HWND g_previewWnd = NULL;
-static HTHUMBNAIL g_thumb = NULL;
 static UINT g_previewTimer = 0;
 
 // ---- 工具函数 ----
@@ -726,12 +724,56 @@ void SetAutoStart(BOOL enable) {
     RegCloseKey(hKey);
 }
 
-// ---- 截屏预览窗口 (DWM 缩略图) ----
+// ---- 工作区总览预览 (snapshot 1-9 拼成 3×3 大图) ----
 static const wchar_t* PREVIEW_CLASS = L"WW_Preview";
+static HBITMAP g_overviewBmp = NULL;
+static int g_overviewW = 0, g_overviewH = 0;
+
+// 用 PrintWindow 截取单个窗口客户区，返回 HBITMAP 及宽高
+static HBITMAP CaptureWindow(HWND hwnd, int* outW, int* outH) {
+    RECT r;
+    if (!GetWindowRect(hwnd, &r)) return NULL;
+    int w = r.right - r.left, h = r.bottom - r.top;
+    if (w <= 4 || h <= 4) return NULL;
+    HDC hdcScreen = GetDC(NULL);
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    HBITMAP hBmp = CreateCompatibleBitmap(hdcScreen, w, h);
+    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBmp);
+    // PW_RENDERFULLCONTENT: 尝试捕获 D3D 窗口内容 (Win8.1+)
+    if (!PrintWindow(hwnd, hdcMem, PW_RENDERFULLCONTENT)) {
+        // 回退：FillRect 灰色占位
+        RECT rc = {0, 0, w, h};
+        FillRect(hdcMem, &rc, (HBRUSH)GetStockObject(LTGRAY_BRUSH));
+    }
+    SelectObject(hdcMem, hOld);
+    DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
+    if (outW) *outW = w;
+    if (outH) *outH = h;
+    return hBmp;
+}
 
 LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                                 LPARAM lParam) {
     switch (msg) {
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            if (g_overviewBmp) {
+                RECT rc;
+                GetClientRect(hwnd, &rc);
+                HDC memDC = CreateCompatibleDC(hdc);
+                HBITMAP oldBmp =
+                    (HBITMAP)SelectObject(memDC, g_overviewBmp);
+                SetStretchBltMode(hdc, HALFTONE);
+                StretchBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0,
+                           g_overviewW, g_overviewH, SRCCOPY);
+                SelectObject(memDC, oldBmp);
+                DeleteDC(memDC);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
         case WM_LBUTTONDOWN:
         case WM_RBUTTONDOWN:
         case WM_MBUTTONDOWN:
@@ -742,34 +784,135 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
             if (wParam == g_previewTimer) DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
-            if (g_thumb) {
-                DwmUnregisterThumbnail(g_thumb);
-                g_thumb = NULL;
-            }
             if (g_previewTimer) {
                 KillTimer(hwnd, g_previewTimer);
                 g_previewTimer = 0;
             }
             g_previewWnd = NULL;
+            if (g_overviewBmp) {
+                DeleteObject(g_overviewBmp);
+                g_overviewBmp = NULL;
+                g_overviewW = g_overviewH = 0;
+            }
             break;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
 static void CaptureAndShow() {
-    POINT pt;
-    GetCursorPos(&pt);
-    HWND target = WindowFromPoint(pt);
-    if (!target || !IsWindow(target)) return;
-
-    // 跳过我们的隐藏窗口和预览窗口自身
-    if (target == g_hWnd || target == g_previewWnd) return;
-
     // 销毁旧预览
     if (g_previewWnd && IsWindow(g_previewWnd))
         DestroyWindow(g_previewWnd);
 
-    // 注册预览窗口类（仅一次）
+    POINT pt;
+    GetCursorPos(&pt);
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+
+    // ---- 合成 3×3 总览图 ----
+    // 每个 snapshot 占据 sw/3 × sh/3 的网格单元
+    constexpr int kCols = 3, kRows = 3;
+    int cellW = sw / kCols;
+    int cellH = sh / kRows;
+    int totalW = cellW * kCols;
+    int totalH = cellH * kRows;
+
+    HDC hdcScreen = GetDC(NULL);
+    HDC hdcComp = CreateCompatibleDC(hdcScreen);
+    g_overviewBmp = CreateCompatibleBitmap(hdcScreen, totalW, totalH);
+    g_overviewW = totalW;
+    g_overviewH = totalH;
+    HBITMAP hOldComp = (HBITMAP)SelectObject(hdcComp, g_overviewBmp);
+
+    // 白色背景
+    RECT rcBg = {0, 0, totalW, totalH};
+    FillRect(hdcComp, &rcBg, (HBRUSH)GetStockObject(WHITE_BRUSH));
+
+    HFONT hFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                              DEFAULT_PITCH, L"Consolas");
+    HFONT hOldFont = (HFONT)SelectObject(hdcComp, hFont);
+    SetBkMode(hdcComp, TRANSPARENT);
+
+    for (int slot = 1; slot <= 9; slot++) {
+        int col = (slot - 1) % kCols;
+        int row = (slot - 1) / kCols;
+        int ox = col * cellW;
+        int oy = row * cellH;
+
+        // 绘制网格线和标签（即使快照为空也画）
+        HPEN hPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
+        HPEN hOldPen = (HPEN)SelectObject(hdcComp, hPen);
+        MoveToEx(hdcComp, ox, oy, NULL);
+        LineTo(hdcComp, ox + cellW, oy);
+        LineTo(hdcComp, ox + cellW, oy + cellH);
+        LineTo(hdcComp, ox, oy + cellH);
+        LineTo(hdcComp, ox, oy);
+        SelectObject(hdcComp, hOldPen);
+        DeleteObject(hPen);
+
+        wchar_t label[4];
+        swprintf(label, 4, L"%d", slot);
+        SetTextColor(hdcComp, RGB(120, 120, 120));
+        TextOutW(hdcComp, ox + 6, oy + 4, label, (int)wcslen(label));
+
+        Snapshot& snap = g_snapshots[slot];
+        if (snap.windows.empty()) continue;
+
+        double sx = 1.0 / kCols;
+        double sy = 1.0 / kRows;
+        HRGN hRgn = CreateRectRgn(ox, oy, ox + cellW, oy + cellH);
+        SelectClipRgn(hdcComp, hRgn);
+
+        for (const auto& w : snap.windows) {
+            if (w.showCmd == SW_MINIMIZE) continue;
+            if (!IsWindow(w.hwnd)) continue;
+
+            int capW, capH;
+            HBITMAP hCap = CaptureWindow(w.hwnd, &capW, &capH);
+            if (!hCap) continue;
+
+            int dx = ox + (int)(w.rect.left * sx);
+            int dy = oy + (int)(w.rect.top * sy);
+            int dw = (int)((w.rect.right - w.rect.left) * sx);
+            int dh = (int)((w.rect.bottom - w.rect.top) * sy);
+            if (dw < 4) dw = 4;
+            if (dh < 4) dh = 4;
+
+            HDC hdcCap = CreateCompatibleDC(hdcScreen);
+            HBITMAP hOldCap = (HBITMAP)SelectObject(hdcCap, hCap);
+            SetStretchBltMode(hdcComp, HALFTONE);
+            StretchBlt(hdcComp, dx, dy, dw, dh, hdcCap, 0, 0, capW, capH,
+                       SRCCOPY);
+            SelectObject(hdcCap, hOldCap);
+            DeleteDC(hdcCap);
+            DeleteObject(hCap);
+        }
+        SelectClipRgn(hdcComp, NULL);
+        DeleteObject(hRgn);
+    }
+
+    SelectObject(hdcComp, hOldFont);
+    DeleteObject(hFont);
+    SelectObject(hdcComp, hOldComp);
+    DeleteDC(hdcComp);
+    ReleaseDC(NULL, hdcScreen);
+
+    // ---- 显示预览窗口 ----
+    constexpr int kMaxPreviewW = 650;
+    int previewW = totalW, previewH = totalH;
+    if (previewW > kMaxPreviewW) {
+        previewH = previewH * kMaxPreviewW / previewW;
+        previewW = kMaxPreviewW;
+    }
+
+    int x = pt.x + 30, y = pt.y + 30;
+    if (x + previewW > sw) x = pt.x - previewW - 30;
+    if (y + previewH > sh) y = pt.y - previewH - 30;
+    if (x < 0) x = 10;
+    if (y < 0) y = 10;
+
     static bool registered = false;
     if (!registered) {
         WNDCLASSW wc = {};
@@ -782,42 +925,15 @@ static void CaptureAndShow() {
         registered = true;
     }
 
-    constexpr int kPreviewW = 400;
-    int previewH = 300;
-
-    int x = pt.x + 30, y = pt.y + 30;
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
-    if (x + kPreviewW > sw) x = pt.x - kPreviewW - 30;
-    if (y + previewH > sh) y = pt.y - previewH - 30;
-    if (x < 0) x = 10;
-    if (y < 0) y = 10;
-
     g_previewWnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, PREVIEW_CLASS, L"Preview",
-        WS_POPUP | WS_THICKFRAME, x, y, kPreviewW, previewH, NULL, NULL,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, PREVIEW_CLASS, L"Overview",
+        WS_POPUP | WS_THICKFRAME, x, y, previewW, previewH, NULL, NULL,
         GetModuleHandle(NULL), NULL);
-    if (!g_previewWnd) return;
-
-    // 注册 DWM 缩略图：把目标窗口的实时画面绘制到预览窗口
-    HRESULT hr = DwmRegisterThumbnail(g_previewWnd, target, &g_thumb);
-    if (FAILED(hr)) {
-        DestroyWindow(g_previewWnd);
-        return;
+    if (g_previewWnd) {
+        ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
+        UpdateWindow(g_previewWnd);
+        g_previewTimer = SetTimer(g_previewWnd, 1, 8000, NULL);
     }
-
-    RECT dest = {0, 0, kPreviewW, previewH};
-    DWM_THUMBNAIL_PROPERTIES props = {};
-    props.dwFlags =
-        DWM_TNP_VISIBLE | DWM_TNP_RECTDESTINATION | DWM_TNP_OPACITY;
-    props.fVisible = TRUE;
-    props.rcDestination = dest;
-    props.opacity = 255;
-    DwmUpdateThumbnailProperties(g_thumb, &props);
-
-    ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
-    UpdateWindow(g_previewWnd);
-    g_previewTimer = SetTimer(g_previewWnd, 1, 5000, NULL);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
