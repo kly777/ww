@@ -580,14 +580,11 @@ void SwitchToSnapshot(int slot) {
         HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
         RECT rcB = {0, 0, snap.screenW, snap.screenH};
         FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
-        // 第二遍：逐显示器绘制 rcWork（隐藏预览窗口避免入镜）
-        BOOL hadPreview = g_previewWnd && IsWindow(g_previewWnd);
-        if (hadPreview) ShowWindow(g_previewWnd, SW_HIDE);
+        // 第二遍：逐显示器绘制 rcWork
         ctx.hdcMem = hdcMem;
         ctx.bmpW = snap.screenW;
         ctx.bmpH = snap.screenH;
         EnumDisplayMonitors(NULL, NULL, CapDrawProc, (LPARAM)&ctx);
-        if (hadPreview) ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
         SelectObject(hdcMem, hOld);
         DeleteDC(hdcMem);
         ReleaseDC(NULL, hdcScreen);
@@ -844,7 +841,8 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
             return 0;
         }
         case WM_LBUTTONDOWN: {
-            // 点击的格子 → 切换到对应快照
+            // 先隐藏自身再切换，避免被截入快照
+            ShowWindow(hwnd, SW_HIDE);
             RECT rc;
             GetClientRect(hwnd, &rc);
             int mx = LOWORD(lParam);
