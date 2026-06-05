@@ -975,9 +975,6 @@ static void BuildOverviewBitmap() {
 
 // ---- 预览窗口 ----
 static void ShowOverviewWindow(POINT mousePt) {
-    if (g_previewWnd && IsWindow(g_previewWnd))
-        DestroyWindow(g_previewWnd);
-
     constexpr int kMaxPreviewW = 1650, kCols = 3, kRows = 3;
     int previewW = g_overviewW, previewH = g_overviewH;
     if (previewW > kMaxPreviewW) {
@@ -1022,6 +1019,9 @@ static void ShowOverviewWindow(POINT mousePt) {
 }
 
 static void CaptureAndShow() {
+    // 先销毁旧窗口（会清理旧位图），再建新图开新窗
+    if (g_previewWnd && IsWindow(g_previewWnd))
+        DestroyWindow(g_previewWnd);
     BuildOverviewBitmap();
     POINT pt;
     GetCursorPos(&pt);
