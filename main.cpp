@@ -316,7 +316,14 @@ void RestoreSnapshot(int num) {
             SetWindowPlacement(w.hwnd, &wp);
             wp.showCmd = w.showCmd;
             SetWindowPlacement(w.hwnd, &wp);
-            // ShowWindow(w.hwnd, w.showCmd);
+        } else if (w.showCmd == SW_MAXIMIZE && !iconic) {
+            // 已在另一显示器最大化；先还原到目标位置再最大化，实现跨屏移动
+            LOG("[恢复] [%zu] 跨屏最大化: SW_SHOWNOACTIVATE -> SW_MAXIMIZE",
+                i);
+            wp.showCmd = SW_SHOWNOACTIVATE;
+            SetWindowPlacement(w.hwnd, &wp);
+            wp.showCmd = SW_MAXIMIZE;
+            SetWindowPlacement(w.hwnd, &wp);
         } else {
             wp.showCmd = w.showCmd;
             SetWindowPlacement(w.hwnd, &wp);
