@@ -4,11 +4,11 @@
 #define _WIN32_WINNT 0x0A00
 #define NTDDI_VERSION 0x0A000007
 
+#include <io.h>
 #include <ole2.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <stdio.h>
-#include <io.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -57,14 +57,14 @@ static const int kNavMap[10][4] = {
 #ifdef RELEASE
 #define LOG(fmt, ...) ((void)0)
 #else
-#define LOG(fmt, ...)                           \
-    do {                                        \
-        printf(fmt, ##__VA_ARGS__);             \
-        if (g_logFile) {                        \
+#define LOG(fmt, ...)                               \
+    do {                                            \
+        printf(fmt, ##__VA_ARGS__);                 \
+        if (g_logFile) {                            \
             fprintf(g_logFile, fmt, ##__VA_ARGS__); \
-            fflush(g_logFile);                  \
-        }                                       \
-        fflush(stdout);                         \
+            fflush(g_logFile);                      \
+        }                                           \
+        fflush(stdout);                             \
     } while (0)
 #endif
 
@@ -422,10 +422,10 @@ void RestoreSnapshot(int num) {
                                                                : "正常";
 
         bool showCmdMatch = (w.showCmd == actualShowCmd);
-        bool rectMatch = (w.rect.left == actualRect.left &&
-                          w.rect.top == actualRect.top &&
-                          w.rect.right == actualRect.right &&
-                          w.rect.bottom == actualRect.bottom);
+        bool rectMatch =
+            (w.rect.left == actualRect.left && w.rect.top == actualRect.top &&
+             w.rect.right == actualRect.right &&
+             w.rect.bottom == actualRect.bottom);
 
         if (!showCmdMatch) {
             LOG("[验证] [!] [%zu] \"%s\" 状态不一致! 期望=%s(%u) 实际=%s(%u)\n",
@@ -531,8 +531,8 @@ void SwitchSnapshot(int slot) {
         FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
         // 再画虚拟屏幕（覆盖所有显示器）
         SetStretchBltMode(hdcMem, HALFTONE);
-        StretchBlt(hdcMem, 0, 0, snap.screenW, snap.screenH, hdcScreen,
-                   vsX, vsY, vsW, vsH, SRCCOPY);
+        StretchBlt(hdcMem, 0, 0, snap.screenW, snap.screenH, hdcScreen, vsX,
+                   vsY, vsW, vsH, SRCCOPY);
         SelectObject(hdcMem, hOld);
         DeleteDC(hdcMem);
         ReleaseDC(NULL, hdcScreen);
@@ -768,8 +768,7 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                 RECT rc;
                 GetClientRect(hwnd, &rc);
                 HDC memDC = CreateCompatibleDC(hdc);
-                HBITMAP oldBmp =
-                    (HBITMAP)SelectObject(memDC, g_overviewBmp);
+                HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, g_overviewBmp);
                 SetStretchBltMode(hdc, HALFTONE);
                 StretchBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0,
                            g_overviewW, g_overviewH, SRCCOPY);
@@ -805,8 +804,7 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
 }
 
 static void CaptureAndShow() {
-    if (g_previewWnd && IsWindow(g_previewWnd))
-        DestroyWindow(g_previewWnd);
+    if (g_previewWnd && IsWindow(g_previewWnd)) DestroyWindow(g_previewWnd);
 
     POINT pt;
     GetCursorPos(&pt);
@@ -832,10 +830,10 @@ static void CaptureAndShow() {
     int fontSize = cellH / 12;
     if (fontSize < 12) fontSize = 12;
     if (fontSize > 40) fontSize = 40;
-    HFONT hFont = CreateFontW(fontSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
-                              FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                              DEFAULT_PITCH, L"Segoe UI");
+    HFONT hFont =
+        CreateFontW(fontSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     HFONT hOldFont = (HFONT)SelectObject(hdcComp, hFont);
     SetBkMode(hdcComp, TRANSPARENT);
 
@@ -854,8 +852,7 @@ static void CaptureAndShow() {
         if (snap.screenBmp) {
             // 有截图：直接绘制
             HDC hdcSrc = CreateCompatibleDC(hdcScreen);
-            HBITMAP hOldSrc =
-                (HBITMAP)SelectObject(hdcSrc, snap.screenBmp);
+            HBITMAP hOldSrc = (HBITMAP)SelectObject(hdcSrc, snap.screenBmp);
             SetStretchBltMode(hdcComp, HALFTONE);
             StretchBlt(hdcComp, ox, oy, cellW, cellH, hdcSrc, 0, 0,
                        snap.screenW, snap.screenH, SRCCOPY);
@@ -884,8 +881,8 @@ static void CaptureAndShow() {
         wchar_t label[4];
         swprintf(label, 4, L"%d", slot);
         int pad = fontSize / 4;
-        RECT rcLabel = {ox + pad, oy + pad,
-                        ox + pad + fontSize + 10, oy + pad + fontSize + 8};
+        RECT rcLabel = {ox + pad, oy + pad, ox + pad + fontSize + 10,
+                        oy + pad + fontSize + 8};
         HBRUSH hBrLabel = CreateSolidBrush(RGB(30, 30, 30));
         FillRect(hdcComp, &rcLabel, hBrLabel);
         DeleteObject(hBrLabel);
@@ -936,10 +933,10 @@ static void CaptureAndShow() {
         registered = true;
     }
 
-    g_previewWnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, PREVIEW_CLASS, L"Overview",
-        WS_POPUP | WS_THICKFRAME, x, y, previewW, previewH, NULL, NULL,
-        GetModuleHandle(NULL), NULL);
+    g_previewWnd =
+        CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, PREVIEW_CLASS,
+                        L"Overview", WS_POPUP | WS_THICKFRAME, x, y, previewW,
+                        previewH, NULL, NULL, GetModuleHandle(NULL), NULL);
     if (g_previewWnd) {
         ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
         UpdateWindow(g_previewWnd);
@@ -1068,13 +1065,11 @@ int main() {
         *(lastSlash + 1) = L'\0';
         wcscat_s(logPath, MAX_PATH, L"ww.log");
         HANDLE hFile = CreateFileW(logPath, FILE_APPEND_DATA,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                                   NULL);
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             int fd = _open_osfhandle((intptr_t)hFile, 0);
-            if (fd != -1)
-                g_logFile = _fdopen(fd, "a");
+            if (fd != -1) g_logFile = _fdopen(fd, "a");
         }
     }
 #endif
