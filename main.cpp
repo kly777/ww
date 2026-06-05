@@ -544,58 +544,56 @@ static BOOL CALLBACK CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
     return TRUE;
 }
 
+// ---- 工作区截图 ----
+static void CaptureScreenShot(int slot) {
+    Snapshot& snap = g_snapshots[slot];
+    if (snap.screenBmp) DeleteObject(snap.screenBmp);
+    HDC hdcScreen = GetDC(NULL);
+    // 第一遍：收集所有 rcWork 并集
+    CapCtx ctx = {NULL, hdcScreen};
+    ctx.workUnion = {0, 0, 0, 0};
+    EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
+    int uw = ctx.workUnion.right - ctx.workUnion.left;
+    int uh = ctx.workUnion.bottom - ctx.workUnion.top;
+    if (uw <= 0 || uh <= 0) {
+        ReleaseDC(NULL, hdcScreen);
+        return;
+    }
+    snap.screenW = uw / 4;
+    snap.screenH = uh / 4;
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    snap.screenBmp =
+        CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
+    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
+    RECT rcB = {0, 0, snap.screenW, snap.screenH};
+    FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    // 第二遍：逐显示器绘制 rcWork
+    ctx.hdcMem = hdcMem;
+    ctx.bmpW = snap.screenW;
+    ctx.bmpH = snap.screenH;
+    EnumDisplayMonitors(NULL, NULL, CapDrawProc, (LPARAM)&ctx);
+    SelectObject(hdcMem, hOld);
+    DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
+}
+
 // 直接切换到指定快照（不含双击回退逻辑）
 void SwitchToSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
-    if (slot == g_trayNumber) return;  // 已在目标，无需切换
+    if (slot == g_trayNumber) return;
 
     g_windows.clear();
     g_zOrderCounter = 0;
     EnumWindows(EnumWindowCallback, 0);
-
     SyncDesktopState();
 
     SaveSnapshot(g_trayNumber, g_windows);
-
-    // 截取全部显示器工作区拼合（去任务栏，去空隙）
-    {
-        Snapshot& snap = g_snapshots[g_trayNumber];
-        if (snap.screenBmp) DeleteObject(snap.screenBmp);
-        HDC hdcScreen = GetDC(NULL);
-        // 第一遍：收集所有 rcWork 并集
-        CapCtx ctx = {NULL, hdcScreen};
-        ctx.workUnion = {0, 0, 0, 0};
-        EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
-        int uw = ctx.workUnion.right - ctx.workUnion.left;
-        int uh = ctx.workUnion.bottom - ctx.workUnion.top;
-        if (uw <= 0 || uh <= 0) {
-            ReleaseDC(NULL, hdcScreen);
-            goto skip_cap;
-        }
-        snap.screenW = uw / 4;
-        snap.screenH = uh / 4;
-        HDC hdcMem = CreateCompatibleDC(hdcScreen);
-        snap.screenBmp =
-            CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
-        HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
-        RECT rcB = {0, 0, snap.screenW, snap.screenH};
-        FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
-        // 第二遍：逐显示器绘制 rcWork
-        ctx.hdcMem = hdcMem;
-        ctx.bmpW = snap.screenW;
-        ctx.bmpH = snap.screenH;
-        EnumDisplayMonitors(NULL, NULL, CapDrawProc, (LPARAM)&ctx);
-        SelectObject(hdcMem, hOld);
-        DeleteDC(hdcMem);
-        ReleaseDC(NULL, hdcScreen);
-    }
-    skip_cap:
+    CaptureScreenShot(g_trayNumber);
 
     g_prevTrayNumber = g_trayNumber;
     g_trayNumber = slot;
 
     RestoreSnapshot(slot);
-
     UpdateTrayIcon();
     LOG("[切换] %d -> %d\n", g_prevTrayNumber, slot);
 }
@@ -880,19 +878,15 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-static void CaptureAndShow() {
-    if (g_previewWnd && IsWindow(g_previewWnd)) DestroyWindow(g_previewWnd);
+// ---- 工作区总览合成 ----
+static void BuildOverviewBitmap() {
+    if (g_overviewBmp) { DeleteObject(g_overviewBmp); g_overviewBmp = NULL; }
 
-    POINT pt;
-    GetCursorPos(&pt);
     int sw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     int sh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-
     constexpr int kCols = 3, kRows = 3;
-    int cellW = sw / kCols;
-    int cellH = sh / kRows;
-    int totalW = cellW * kCols;
-    int totalH = cellH * kRows;
+    int cellW = sw / kCols, cellH = sh / kRows;
+    int totalW = cellW * kCols, totalH = cellH * kRows;
 
     HDC hdcScreen = GetDC(NULL);
     HDC hdcComp = CreateCompatibleDC(hdcScreen);
@@ -915,19 +909,13 @@ static void CaptureAndShow() {
     SetBkMode(hdcComp, TRANSPARENT);
 
     int hasAny = 0;
-
     for (int slot = 1; slot <= 9; slot++) {
-        int col = (slot - 1) % kCols;
-        int row = (slot - 1) / kCols;
-        int ox = col * cellW;
-        int oy = row * cellH;
-
+        int col = (slot - 1) % kCols, row = (slot - 1) / kCols;
+        int ox = col * cellW, oy = row * cellH;
         Snapshot& snap = g_snapshots[slot];
 
-        // 背景填充
         RECT rcCell = {ox, oy, ox + cellW, oy + cellH};
         if (snap.screenBmp) {
-            // 有截图：直接绘制
             HDC hdcSrc = CreateCompatibleDC(hdcScreen);
             HBITMAP hOldSrc = (HBITMAP)SelectObject(hdcSrc, snap.screenBmp);
             SetStretchBltMode(hdcComp, COLORONCOLOR);
@@ -983,30 +971,30 @@ static void CaptureAndShow() {
     SelectObject(hdcComp, hOldComp);
     DeleteDC(hdcComp);
     ReleaseDC(NULL, hdcScreen);
+}
 
-    // ---- 预览窗口 ----
-    constexpr int kMaxPreviewW = 1650;
-    int previewW = totalW, previewH = totalH;
+// ---- 预览窗口 ----
+static void ShowOverviewWindow(POINT mousePt) {
+    if (g_previewWnd && IsWindow(g_previewWnd))
+        DestroyWindow(g_previewWnd);
+
+    constexpr int kMaxPreviewW = 1650, kCols = 3, kRows = 3;
+    int previewW = g_overviewW, previewH = g_overviewH;
     if (previewW > kMaxPreviewW) {
         previewH = previewH * kMaxPreviewW / previewW;
         previewW = kMaxPreviewW;
     }
 
-    // 计算当前快照所在格子，让鼠标正好落在这格中心
     int curCol = (g_trayNumber - 1) % kCols;
     int curRow = (g_trayNumber - 1) / kCols;
-    double fx = (curCol + 0.5) / kCols;  // 格子在总览图中的比例位置
-    double fy = (curRow + 0.5) / kRows;
-    int x = pt.x - (int)(fx * previewW);
-    int y = pt.y - (int)(fy * previewH);
-    // 用鼠标所在显示器的 rcWork 做边界约束
-    HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    int x = mousePt.x - (int)((curCol + 0.5) / kCols * previewW);
+    int y = mousePt.y - (int)((curRow + 0.5) / kRows * previewH);
+
+    HMONITOR hMon = MonitorFromPoint(mousePt, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi = {sizeof(mi)};
     GetMonitorInfoW(hMon, &mi);
-    if (x + previewW > mi.rcWork.right)
-        x = mi.rcWork.right - previewW;
-    if (y + previewH > mi.rcWork.bottom)
-        y = mi.rcWork.bottom - previewH;
+    if (x + previewW > mi.rcWork.right) x = mi.rcWork.right - previewW;
+    if (y + previewH > mi.rcWork.bottom) y = mi.rcWork.bottom - previewH;
     if (x < mi.rcWork.left) x = mi.rcWork.left;
     if (y < mi.rcWork.top) y = mi.rcWork.top;
 
@@ -1024,13 +1012,20 @@ static void CaptureAndShow() {
 
     g_previewWnd =
         CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, PREVIEW_CLASS,
-                        L"Overview", WS_POPUP, x, y, previewW,
-                        previewH, NULL, NULL, GetModuleHandle(NULL), NULL);
+                        L"Overview", WS_POPUP, x, y, previewW, previewH,
+                        NULL, NULL, GetModuleHandle(NULL), NULL);
     if (g_previewWnd) {
         ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
         UpdateWindow(g_previewWnd);
         g_previewTimer = SetTimer(g_previewWnd, 1, 8000, NULL);
     }
+}
+
+static void CaptureAndShow() {
+    BuildOverviewBitmap();
+    POINT pt;
+    GetCursorPos(&pt);
+    ShowOverviewWindow(pt);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
