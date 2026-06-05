@@ -239,6 +239,7 @@ void EnsureRectVisible(RECT& rect, int width, int height) {
 }
 
 // ---- 恢复快照 ----
+static const char* ShowCmdStr(UINT cmd);
 void RestoreSnapshot(int num) {
     if (num < 0 || num > 9) return;
     Snapshot& snap = g_snapshots[num];
@@ -299,9 +300,7 @@ void RestoreSnapshot(int num) {
         EnsureRectVisible(r, ww, wh);
 
         BOOL iconic = IsIconic(w.hwnd);
-        const char* showCmdStr = w.showCmd == SW_MAXIMIZE   ? "最大化"
-                                 : w.showCmd == SW_MINIMIZE ? "最小化"
-                                                            : "正常";
+        const char* showCmdStr = ShowCmdStr(w.showCmd);
         LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
             "%ldx%ld",
             i, w.title.c_str(), iconic, showCmdStr, r.left, r.top, r.right,
@@ -422,12 +421,8 @@ void RestoreSnapshot(int num) {
         GetWindowPlacement(w.hwnd, &wp);
         RECT actualRect = wp.rcNormalPosition;
 
-        const char* expectedStr = w.showCmd == SW_MAXIMIZE   ? "最大化"
-                                  : w.showCmd == SW_MINIMIZE ? "最小化"
-                                                             : "正常";
-        const char* actualStr = actualShowCmd == SW_MAXIMIZE   ? "最大化"
-                                : actualShowCmd == SW_MINIMIZE ? "最小化"
-                                                               : "正常";
+        const char* expectedStr = ShowCmdStr(w.showCmd);
+        const char* actualStr = ShowCmdStr(actualShowCmd);
 
         bool showCmdMatch = (w.showCmd == actualShowCmd);
         bool rectMatch =
@@ -506,10 +501,27 @@ static void SyncDesktopState() {
 struct CapCtx {
     HDC hdcMem;
     HDC hdcScreen;
-    int vsX, vsY, vsW, vsH;
     int bmpW, bmpH;
     RECT workUnion;  // 所有 rcWork 的并集
 };
+
+static BOOL CALLBACK CapMonitorProc(HMONITOR, HDC, LPRECT, LPARAM);
+static BOOL CALLBACK CapDrawProc(HMONITOR, HDC, LPRECT, LPARAM);
+
+// ---- 工作区并集 ----
+static RECT GetWorkAreaUnion() {
+    CapCtx ctx = {NULL, NULL};
+    ctx.workUnion = {0, 0, 0, 0};
+    EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
+    return ctx.workUnion;
+}
+
+// ---- showCmd → 字符串 ----
+static const char* ShowCmdStr(UINT cmd) {
+    return cmd == SW_MAXIMIZE ? "最大化"
+           : cmd == SW_MINIMIZE ? "最小化"
+                                : "正常";
+}
 
 static BOOL CALLBACK CapMonitorProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
     CapCtx* c = (CapCtx*)lp;
@@ -556,30 +568,21 @@ static BOOL CALLBACK CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
 static void CaptureScreenShot(int slot) {
     Snapshot& snap = g_snapshots[slot];
     if (snap.screenBmp) DeleteObject(snap.screenBmp);
-    HDC hdcScreen = GetDC(NULL);
-    // 第一遍：收集所有 rcWork 并集
-    CapCtx ctx = {NULL, hdcScreen};
-    ctx.workUnion = {0, 0, 0, 0};
-    EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
-    snap.capUnion = ctx.workUnion;
-    int uw = ctx.workUnion.right - ctx.workUnion.left;
-    int uh = ctx.workUnion.bottom - ctx.workUnion.top;
-    if (uw <= 0 || uh <= 0) {
-        ReleaseDC(NULL, hdcScreen);
-        return;
-    }
+    RECT workUnion = GetWorkAreaUnion();
+    snap.capUnion = workUnion;
+    int uw = workUnion.right - workUnion.left;
+    int uh = workUnion.bottom - workUnion.top;
+    if (uw <= 0 || uh <= 0) return;
     snap.screenW = uw / 4;
     snap.screenH = uh / 4;
+    HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
     snap.screenBmp =
         CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
     HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
     RECT rcB = {0, 0, snap.screenW, snap.screenH};
     FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
-    // 第二遍：逐显示器绘制 rcWork
-    ctx.hdcMem = hdcMem;
-    ctx.bmpW = snap.screenW;
-    ctx.bmpH = snap.screenH;
+    CapCtx ctx = {hdcMem, hdcScreen, snap.screenW, snap.screenH, workUnion};
     EnumDisplayMonitors(NULL, NULL, CapDrawProc, (LPARAM)&ctx);
     SelectObject(hdcMem, hOld);
     DeleteDC(hdcMem);
@@ -900,12 +903,9 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
 static void BuildOverviewBitmap() {
     if (g_overviewBmp) { DeleteObject(g_overviewBmp); g_overviewBmp = NULL; }
 
-    // 用当前工作区并集（去任务栏），与截图尺寸基准一致
-    CapCtx ctx = {NULL, NULL};
-    ctx.workUnion = {0, 0, 0, 0};
-    EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
-    int sw = ctx.workUnion.right - ctx.workUnion.left;
-    int sh = ctx.workUnion.bottom - ctx.workUnion.top;
+    RECT workUnion = GetWorkAreaUnion();
+    int sw = workUnion.right - workUnion.left;
+    int sh = workUnion.bottom - workUnion.top;
     if (sw <= 0) sw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     if (sh <= 0) sh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
