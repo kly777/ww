@@ -511,22 +511,24 @@ void SwitchSnapshot(int slot) {
 
     SaveSnapshot(g_trayNumber, g_windows);
 
-    // 截取当前屏幕存入快照，供 Alt+S 总览使用
+    // 截取当前屏幕（不含任务栏）存入快照，供 Alt+S 总览使用
     {
         Snapshot& snap = g_snapshots[g_trayNumber];
         if (snap.screenBmp) DeleteObject(snap.screenBmp);
-        int sw = GetSystemMetrics(SM_CXSCREEN);
-        int sh = GetSystemMetrics(SM_CYSCREEN);
-        snap.screenW = sw / 2;   // 缩到 1/2 省内存
-        snap.screenH = sh / 2;
+        RECT work;
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+        int capW = work.right - work.left;
+        int capH = work.bottom - work.top;
+        snap.screenW = capW / 2;   // 缩到 1/2 省内存
+        snap.screenH = capH / 2;
         HDC hdcScreen = GetDC(NULL);
         HDC hdcMem = CreateCompatibleDC(hdcScreen);
         snap.screenBmp =
             CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
         HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
         SetStretchBltMode(hdcMem, HALFTONE);
-        StretchBlt(hdcMem, 0, 0, snap.screenW, snap.screenH, hdcScreen, 0, 0,
-                   sw, sh, SRCCOPY);
+        StretchBlt(hdcMem, 0, 0, snap.screenW, snap.screenH, hdcScreen,
+                   work.left, work.top, capW, capH, SRCCOPY);
         SelectObject(hdcMem, hOld);
         DeleteDC(hdcMem);
         ReleaseDC(NULL, hdcScreen);
@@ -804,8 +806,10 @@ static void CaptureAndShow() {
 
     POINT pt;
     GetCursorPos(&pt);
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
+    RECT work;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    int sw = work.right - work.left;
+    int sh = work.bottom - work.top;
 
     constexpr int kCols = 3, kRows = 3;
     int cellW = sw / kCols;
