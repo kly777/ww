@@ -999,10 +999,16 @@ static void CaptureAndShow() {
     double fy = (curRow + 0.5) / kRows;
     int x = pt.x - (int)(fx * previewW);
     int y = pt.y - (int)(fy * previewH);
-    if (x + previewW > sw) x = pt.x - previewW - 30;
-    if (y + previewH > sh) y = pt.y - previewH - 30;
-    if (x < 0) x = 10;
-    if (y < 0) y = 10;
+    // 用鼠标所在显示器的 rcWork 做边界约束
+    HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {sizeof(mi)};
+    GetMonitorInfoW(hMon, &mi);
+    if (x + previewW > mi.rcWork.right)
+        x = mi.rcWork.right - previewW;
+    if (y + previewH > mi.rcWork.bottom)
+        y = mi.rcWork.bottom - previewH;
+    if (x < mi.rcWork.left) x = mi.rcWork.left;
+    if (y < mi.rcWork.top) y = mi.rcWork.top;
 
     static bool registered = false;
     if (!registered) {
