@@ -209,8 +209,8 @@ ShouldSkipWindow(HWND hwnd)
     // 如果存在其他虚拟桌面，只枚举当前桌面的窗口
     if (g_pDesktopManager) {
         GUID desktopId;
-        if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId)) ||
-            IsEqualGUID(desktopId, GUID_NULL))
+        if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId))
+            || IsEqualGUID(desktopId, GUID_NULL))
             return TRUE;
     }
     return FALSE;
@@ -308,8 +308,8 @@ RestoreSnapshot(int num)
 
     // 将当前可见窗口中"不在目标快照里"的全部最小化
     for (const auto& w : g_windows) {
-        auto it =
-                std::find_if(wins.begin(), wins.end(), [&](const WinInfo& sw) {
+        auto it = std::find_if(
+                wins.begin(), wins.end(), [&](const WinInfo& sw) {
                     return sw.hwnd == w.hwnd;
                 });
         if (it == wins.end()) {
@@ -495,10 +495,10 @@ RestoreSnapshot(int num)
         const char* actualStr = ShowCmdStr(actualShowCmd);
 
         bool showCmdMatch = (w.showCmd == actualShowCmd);
-        bool rectMatch = (w.rect.left == actualRect.left &&
-                          w.rect.top == actualRect.top &&
-                          w.rect.right == actualRect.right &&
-                          w.rect.bottom == actualRect.bottom);
+        bool rectMatch = (w.rect.left == actualRect.left
+                          && w.rect.top == actualRect.top
+                          && w.rect.right == actualRect.right
+                          && w.rect.bottom == actualRect.bottom);
 
         if (!showCmdMatch) {
             LOG("[验证] [!] [%zu] \"%s\" 状态不一致! 期望=%s(%u) 实际=%s(%u)\n",
@@ -686,8 +686,8 @@ CaptureScreenShot(int slot)
     snap.screenH = uh / 4;
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    snap.screenBmp =
-            CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
+    snap.screenBmp
+            = CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
     HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
     RECT rcB = { 0, 0, snap.screenW, snap.screenH };
     FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
@@ -743,8 +743,8 @@ MakeTrayIcon(int number)
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* bits = NULL;
-    HBITMAP hBmpColor =
-            CreateDIBSection(hMemDC, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+    HBITMAP hBmpColor
+            = CreateDIBSection(hMemDC, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
     HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hBmpColor);
 
     static const COLORREF kColors[] = {
@@ -939,13 +939,14 @@ IsAutoStartEnabled()
                       L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                       0,
                       KEY_READ,
-                      &hKey) != ERROR_SUCCESS)
+                      &hKey)
+        != ERROR_SUCCESS)
         return FALSE;
     wchar_t path[MAX_PATH];
     DWORD size = sizeof(path);
     DWORD type;
-    LSTATUS ret =
-            RegQueryValueExW(hKey, L"WW", NULL, &type, (BYTE*)path, &size);
+    LSTATUS ret
+            = RegQueryValueExW(hKey, L"WW", NULL, &type, (BYTE*)path, &size);
     RegCloseKey(hKey);
     return ret == ERROR_SUCCESS;
 }
@@ -958,7 +959,8 @@ SetAutoStart(BOOL enable)
                       L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                       0,
                       KEY_SET_VALUE,
-                      &hKey) != ERROR_SUCCESS)
+                      &hKey)
+        != ERROR_SUCCESS)
         return;
     if (enable) {
         wchar_t path[MAX_PATH];
@@ -1017,8 +1019,8 @@ PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             int hb = border / 2;
             HPEN hPen = CreatePen(PS_SOLID, border, RGB(40, 40, 40));
             HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-            HBRUSH hOldBr =
-                    (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            HBRUSH hOldBr
+                    = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
             Rectangle(hdc, hb, hb, rc.right - hb, rc.bottom - hb);
             SelectObject(hdc, hOldBr);
             SelectObject(hdc, hOldPen);
@@ -1168,8 +1170,8 @@ BuildOverviewBitmap()
 
     if (hasAny == 0) {
         SetTextColor(hdcComp, RGB(160, 160, 160));
-        const wchar_t* hint =
-                L"Ctrl+1~9 to save · Ctrl+N to switch · Alt+S to overview";
+        const wchar_t* hint
+                = L"Ctrl+1~9 to save · Ctrl+N to switch · Alt+S to overview";
         SIZE ts;
         GetTextExtentPoint32W(hdcComp, hint, (int)wcslen(hint), &ts);
         TextOutW(hdcComp,
