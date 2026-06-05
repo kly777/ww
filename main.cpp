@@ -494,6 +494,56 @@ static void SyncDesktopState() {
     UpdateTrayIcon();
 }
 
+// EnumDisplayMonitors 回调上下文
+struct CapCtx {
+    HDC hdcMem;
+    HDC hdcScreen;
+    int vsX, vsY, vsW, vsH;
+    int bmpW, bmpH;
+    RECT workUnion;  // 所有 rcWork 的并集
+};
+
+static BOOL CALLBACK CapMonitorProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
+    CapCtx* c = (CapCtx*)lp;
+    MONITORINFO mi = {sizeof(mi)};
+    if (!GetMonitorInfoW(hMon, &mi)) return TRUE;
+    // 累计 rcWork 并集
+    if (c->workUnion.left == c->workUnion.right) {
+        c->workUnion = mi.rcWork;
+    } else {
+        if (mi.rcWork.left < c->workUnion.left)
+            c->workUnion.left = mi.rcWork.left;
+        if (mi.rcWork.top < c->workUnion.top)
+            c->workUnion.top = mi.rcWork.top;
+        if (mi.rcWork.right > c->workUnion.right)
+            c->workUnion.right = mi.rcWork.right;
+        if (mi.rcWork.bottom > c->workUnion.bottom)
+            c->workUnion.bottom = mi.rcWork.bottom;
+    }
+    return TRUE;
+}
+
+// 第二次遍历：实际绘制
+static BOOL CALLBACK CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
+    CapCtx* c = (CapCtx*)lp;
+    MONITORINFO mi = {sizeof(mi)};
+    if (!GetMonitorInfoW(hMon, &mi)) return TRUE;
+    int mx = mi.rcWork.left - c->workUnion.left;
+    int my = mi.rcWork.top - c->workUnion.top;
+    int mw = mi.rcWork.right - mi.rcWork.left;
+    int mh = mi.rcWork.bottom - mi.rcWork.top;
+    int uw = c->workUnion.right - c->workUnion.left;
+    int uh = c->workUnion.bottom - c->workUnion.top;
+    int dx = mx * c->bmpW / uw;
+    int dy = my * c->bmpH / uh;
+    int dw = mw * c->bmpW / uw;
+    int dh = mh * c->bmpH / uh;
+    SetStretchBltMode(c->hdcMem, HALFTONE);
+    StretchBlt(c->hdcMem, dx, dy, dw, dh, c->hdcScreen,
+               mi.rcWork.left, mi.rcWork.top, mw, mh, SRCCOPY);
+    return TRUE;
+}
+
 // 再次按同一数字 → 回到上一个快照，实现 Ctrl+N 双击在最近两个工作区间切换
 void SwitchSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
@@ -511,32 +561,39 @@ void SwitchSnapshot(int slot) {
 
     SaveSnapshot(g_trayNumber, g_windows);
 
-    // 截取全部显示器拼合画面（空缺填黑）存入快照，供 Alt+S 总览
+    // 截取全部显示器工作区拼合（去任务栏，去空隙）
     {
         Snapshot& snap = g_snapshots[g_trayNumber];
         if (snap.screenBmp) DeleteObject(snap.screenBmp);
-        int vsX = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        int vsY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        int vsW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        int vsH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        snap.screenW = vsW / 2;
-        snap.screenH = vsH / 2;
         HDC hdcScreen = GetDC(NULL);
+        // 第一遍：收集所有 rcWork 并集
+        CapCtx ctx = {NULL, hdcScreen};
+        ctx.workUnion = {0, 0, 0, 0};
+        EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
+        int uw = ctx.workUnion.right - ctx.workUnion.left;
+        int uh = ctx.workUnion.bottom - ctx.workUnion.top;
+        if (uw <= 0 || uh <= 0) {
+            ReleaseDC(NULL, hdcScreen);
+            goto skip_cap;
+        }
+        snap.screenW = uw / 2;
+        snap.screenH = uh / 2;
         HDC hdcMem = CreateCompatibleDC(hdcScreen);
         snap.screenBmp =
             CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
         HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
-        // 先填黑（多显示器间的空隙）
         RECT rcB = {0, 0, snap.screenW, snap.screenH};
         FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
-        // 再画虚拟屏幕（覆盖所有显示器）
-        SetStretchBltMode(hdcMem, HALFTONE);
-        StretchBlt(hdcMem, 0, 0, snap.screenW, snap.screenH, hdcScreen, vsX,
-                   vsY, vsW, vsH, SRCCOPY);
+        // 第二遍：逐显示器绘制 rcWork
+        ctx.hdcMem = hdcMem;
+        ctx.bmpW = snap.screenW;
+        ctx.bmpH = snap.screenH;
+        EnumDisplayMonitors(NULL, NULL, CapDrawProc, (LPARAM)&ctx);
         SelectObject(hdcMem, hOld);
         DeleteDC(hdcMem);
         ReleaseDC(NULL, hdcScreen);
     }
+    skip_cap:
 
     g_prevTrayNumber = g_trayNumber;
     g_trayNumber = slot;
