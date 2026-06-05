@@ -835,7 +835,21 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
             EndPaint(hwnd, &ps);
             return 0;
         }
-        case WM_LBUTTONDOWN:
+        case WM_LBUTTONDOWN: {
+            // 点击的格子 → 切换到对应快照
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int mx = LOWORD(lParam);
+            int my = HIWORD(lParam);
+            int col = mx * 3 / (rc.right - rc.left);
+            int row = my * 3 / (rc.bottom - rc.top);
+            if (col >= 0 && col < 3 && row >= 0 && row < 3) {
+                int slot = row * 3 + col + 1;
+                SwitchSnapshot(slot);
+            }
+            DestroyWindow(hwnd);
+            return 0;
+        }
         case WM_RBUTTONDOWN:
         case WM_MBUTTONDOWN:
         case WM_KEYDOWN:
