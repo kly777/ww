@@ -1034,9 +1034,10 @@ static void ShowOverviewWindow(POINT mousePt) {
 }
 
 static void CaptureAndShow() {
-    // 先销毁旧窗口（会清理旧位图），再建新图开新窗
+    // 先销毁旧窗口，再截取当前快照确保总览是最新状态
     if (g_previewWnd && IsWindow(g_previewWnd))
         DestroyWindow(g_previewWnd);
+    CaptureScreenShot(g_trayNumber);
     BuildOverviewBitmap();
     POINT pt;
     GetCursorPos(&pt);
