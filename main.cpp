@@ -78,10 +78,9 @@ struct WinInfo {
 
 struct Snapshot {
     std::vector<WinInfo> windows;
-    HBITMAP screenBmp = NULL;  // 离开快照时的全屏截图
+    HBITMAP screenBmp = NULL;
     int screenW = 0, screenH = 0;
-    int capX = 0, capY = 0;    // 截屏时的虚拟屏幕原点
-    int capVW = 0, capVH = 0;  // 截屏时的虚拟屏幕宽高
+    RECT capUnion = {0, 0, 0, 0};  // 截屏时的 rcWork 并集（用于坐标映射）
 };
 
 // ---- 全局 ----
@@ -550,15 +549,12 @@ static BOOL CALLBACK CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
 static void CaptureScreenShot(int slot) {
     Snapshot& snap = g_snapshots[slot];
     if (snap.screenBmp) DeleteObject(snap.screenBmp);
-    snap.capX = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    snap.capY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    snap.capVW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    snap.capVH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     HDC hdcScreen = GetDC(NULL);
     // 第一遍：收集所有 rcWork 并集
     CapCtx ctx = {NULL, hdcScreen};
     ctx.workUnion = {0, 0, 0, 0};
     EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
+    snap.capUnion = ctx.workUnion;
     int uw = ctx.workUnion.right - ctx.workUnion.left;
     int uh = ctx.workUnion.bottom - ctx.workUnion.top;
     if (uw <= 0 || uh <= 0) {
@@ -927,17 +923,21 @@ static void BuildOverviewBitmap() {
             SelectObject(hdcSrc, hOldSrc);
             DeleteDC(hdcSrc);
             hasAny++;
-            // 绘制窗口覆膜：淡色填充 + 深色边框 + 标题
-            double sx = (double)cellW / snap.capVW;
-            double sy = (double)cellH / snap.capVH;
-            for (const auto& w : snap.windows) {
-                if (w.showCmd == SW_MINIMIZE) continue;
-                int wx = ox + (int)((w.rect.left - snap.capX) * sx);
-                int wy = oy + (int)((w.rect.top - snap.capY) * sy);
-                int ww = (int)((w.rect.right - w.rect.left) * sx);
-                int wh = (int)((w.rect.bottom - w.rect.top) * sy);
-                if (ww < 6) ww = 6;
-                if (wh < 6) wh = 6;
+            // 绘制窗口覆膜：半透明填充 + 深色边框 + 标题
+            int ux = snap.capUnion.left, uy = snap.capUnion.top;
+            int uw = snap.capUnion.right - ux;
+            int uh = snap.capUnion.bottom - uy;
+            if (uw > 0 && uh > 0) {
+                double sx = (double)cellW / uw;
+                double sy = (double)cellH / uh;
+                for (const auto& w : snap.windows) {
+                    if (w.showCmd == SW_MINIMIZE) continue;
+                    int wx = ox + (int)((w.rect.left - ux) * sx);
+                    int wy = oy + (int)((w.rect.top - uy) * sy);
+                    int ww = (int)((w.rect.right - w.rect.left) * sx);
+                    int wh = (int)((w.rect.bottom - w.rect.top) * sy);
+                    if (ww < 8) ww = 8;
+                    if (wh < 8) wh = 8;
                 RECT rcW = {wx, wy, wx + ww, wy + wh};
                 // 半透明覆膜（AlphaBlend）
                 {
@@ -992,7 +992,7 @@ static void BuildOverviewBitmap() {
                     SetTextColor(hdcComp, RGB(20, 20, 20));
                     SetBkMode(hdcComp, TRANSPARENT);
                     HFONT hFt = CreateFontW(
-                        18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                        58, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                         DEFAULT_PITCH, L"Segoe UI");
@@ -1005,6 +1005,7 @@ static void BuildOverviewBitmap() {
                     DeleteObject(hFt);
                 }
             }
+            }  // if (uw > 0 && uh > 0)
         } else {
             // 空快照：浅灰背景
             HBRUSH hBr = CreateSolidBrush(RGB(248, 248, 250));
