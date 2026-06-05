@@ -834,6 +834,15 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                            g_overviewW, g_overviewH, SRCCOPY);
                 SelectObject(memDC, oldBmp);
                 DeleteDC(memDC);
+                // 5px 直角边框
+                HPEN hPen = CreatePen(PS_SOLID, 5, RGB(60, 60, 60));
+                HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+                HBRUSH hOldBr =
+                    (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                Rectangle(hdc, 2, 2, rc.right - 2, rc.bottom - 2);
+                SelectObject(hdc, hOldBr);
+                SelectObject(hdc, hOldPen);
+                DeleteObject(hPen);
             }
             EndPaint(hwnd, &ps);
             return 0;
@@ -1015,7 +1024,7 @@ static void CaptureAndShow() {
 
     g_previewWnd =
         CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, PREVIEW_CLASS,
-                        L"Overview", WS_POPUP | WS_THICKFRAME, x, y, previewW,
+                        L"Overview", WS_POPUP, x, y, previewW,
                         previewH, NULL, NULL, GetModuleHandle(NULL), NULL);
     if (g_previewWnd) {
         ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
