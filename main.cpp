@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <io.h>
 #include <windows.h>
+#include <dwmapi.h>
 
 #include <algorithm>
 #include <array>
@@ -29,7 +30,8 @@ enum class HotkeyId : int {
     ArrowUp = 10,
     ArrowDown,
     ArrowLeft,
-    ArrowRight
+    ArrowRight,
+    Screenshot = 14
 };
 enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 
@@ -104,6 +106,11 @@ static GUID g_currentDesktopId = GUID_NULL;
 
 static HWND g_hWnd = NULL;
 static FILE* g_logFile = NULL;  // 文件日志句柄，仅 #ifndef RELEASE 有效
+
+// ---- DWM 缩略图预览 ----
+static HWND g_previewWnd = NULL;
+static HTHUMBNAIL g_thumb = NULL;
+static UINT g_previewTimer = 0;
 
 // ---- 工具函数 ----
 std::string WideToUtf8(const wchar_t* src) {
@@ -670,6 +677,8 @@ void RegisterHotkeys(HWND hwnd) {
                    MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_LEFT);
     RegisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowRight),
                    MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_RIGHT);
+    RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Screenshot),
+                   MOD_ALT | MOD_NOREPEAT, 'S');
 }
 
 void UnregisterHotkeys(HWND hwnd) {
@@ -680,6 +689,7 @@ void UnregisterHotkeys(HWND hwnd) {
     UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowDown));
     UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowLeft));
     UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowRight));
+    UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::Screenshot));
 }
 
 // ---- 开机启动 ----
@@ -716,6 +726,100 @@ void SetAutoStart(BOOL enable) {
     RegCloseKey(hKey);
 }
 
+// ---- 截屏预览窗口 (DWM 缩略图) ----
+static const wchar_t* PREVIEW_CLASS = L"WW_Preview";
+
+LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                LPARAM lParam) {
+    switch (msg) {
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+        case WM_KEYDOWN:
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_TIMER:
+            if (wParam == g_previewTimer) DestroyWindow(hwnd);
+            return 0;
+        case WM_DESTROY:
+            if (g_thumb) {
+                DwmUnregisterThumbnail(g_thumb);
+                g_thumb = NULL;
+            }
+            if (g_previewTimer) {
+                KillTimer(hwnd, g_previewTimer);
+                g_previewTimer = 0;
+            }
+            g_previewWnd = NULL;
+            break;
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+static void CaptureAndShow() {
+    POINT pt;
+    GetCursorPos(&pt);
+    HWND target = WindowFromPoint(pt);
+    if (!target || !IsWindow(target)) return;
+
+    // 跳过我们的隐藏窗口和预览窗口自身
+    if (target == g_hWnd || target == g_previewWnd) return;
+
+    // 销毁旧预览
+    if (g_previewWnd && IsWindow(g_previewWnd))
+        DestroyWindow(g_previewWnd);
+
+    // 注册预览窗口类（仅一次）
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSW wc = {};
+        wc.lpfnWndProc = PreviewWndProc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        wc.lpszClassName = PREVIEW_CLASS;
+        RegisterClassW(&wc);
+        registered = true;
+    }
+
+    constexpr int kPreviewW = 400;
+    int previewH = 300;
+
+    int x = pt.x + 30, y = pt.y + 30;
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    if (x + kPreviewW > sw) x = pt.x - kPreviewW - 30;
+    if (y + previewH > sh) y = pt.y - previewH - 30;
+    if (x < 0) x = 10;
+    if (y < 0) y = 10;
+
+    g_previewWnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, PREVIEW_CLASS, L"Preview",
+        WS_POPUP | WS_THICKFRAME, x, y, kPreviewW, previewH, NULL, NULL,
+        GetModuleHandle(NULL), NULL);
+    if (!g_previewWnd) return;
+
+    // 注册 DWM 缩略图：把目标窗口的实时画面绘制到预览窗口
+    HRESULT hr = DwmRegisterThumbnail(g_previewWnd, target, &g_thumb);
+    if (FAILED(hr)) {
+        DestroyWindow(g_previewWnd);
+        return;
+    }
+
+    RECT dest = {0, 0, kPreviewW, previewH};
+    DWM_THUMBNAIL_PROPERTIES props = {};
+    props.dwFlags =
+        DWM_TNP_VISIBLE | DWM_TNP_RECTDESTINATION | DWM_TNP_OPACITY;
+    props.fVisible = TRUE;
+    props.rcDestination = dest;
+    props.opacity = 255;
+    DwmUpdateThumbnailProperties(g_thumb, &props);
+
+    ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
+    UpdateWindow(g_previewWnd);
+    g_previewTimer = SetTimer(g_previewWnd, 1, 5000, NULL);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
@@ -750,6 +854,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_HOTKEY: {
             int id = (int)wParam;
+            if (id == static_cast<int>(HotkeyId::Screenshot)) {
+                CaptureAndShow();
+                return 0;
+            }
             int slot = id - static_cast<int>(HotkeyId::Digit);
             if (slot >= 0 && slot <= 9) {
                 SwitchSnapshot(slot);
@@ -854,7 +962,7 @@ int main() {
 
     LOG("\n=== 托盘图标已创建 ===\n");
     LOG("Ctrl+0~9 切换九宫格 | Ctrl+Alt+方向键 在格子间移动 | "
-        "右键托盘选择数字或退出\n\n");
+        "Alt+S 截屏预览 | 右键托盘选择数字或退出\n\n");
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
