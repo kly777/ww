@@ -1,2 +1,5 @@
-BasedOnStyle: google
+BasedOnStyle: Mozilla
 IndentWidth: 4
+BreakBeforeBraces: Linux
+ContinuationIndentWidth: 8
+IndentCaseLabels: false
