@@ -825,12 +825,12 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                            g_overviewW, g_overviewH, SRCCOPY);
                 SelectObject(memDC, oldBmp);
                 DeleteDC(memDC);
-                // 5px 直角边框
-                HPEN hPen = CreatePen(PS_SOLID, 5, RGB(60, 60, 60));
+                // 6px 直角外边框
+                HPEN hPen = CreatePen(PS_SOLID, 6, RGB(40, 40, 40));
                 HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
                 HBRUSH hOldBr =
                     (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-                Rectangle(hdc, 2, 2, rc.right - 2, rc.bottom - 2);
+                Rectangle(hdc, 3, 3, rc.right - 3, rc.bottom - 3);
                 SelectObject(hdc, hOldBr);
                 SelectObject(hdc, hOldPen);
                 DeleteObject(hPen);
@@ -932,7 +932,7 @@ static void BuildOverviewBitmap() {
         }
 
         // 网格线
-        HPEN hPen = CreatePen(PS_SOLID, 2, RGB(210, 210, 210));
+        HPEN hPen = CreatePen(PS_SOLID, 3, RGB(160, 160, 160));
         HPEN hOldPen = (HPEN)SelectObject(hdcComp, hPen);
         MoveToEx(hdcComp, ox, oy, NULL);
         LineTo(hdcComp, ox + cellW, oy);
