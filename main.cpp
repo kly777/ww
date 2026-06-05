@@ -924,7 +924,7 @@ static void CaptureAndShow() {
         }
 
         // 网格线
-        HPEN hPen = CreatePen(PS_SOLID, 1, RGB(210, 210, 210));
+        HPEN hPen = CreatePen(PS_SOLID, 2, RGB(210, 210, 210));
         HPEN hOldPen = (HPEN)SelectObject(hdcComp, hPen);
         MoveToEx(hdcComp, ox, oy, NULL);
         LineTo(hdcComp, ox + cellW, oy);
@@ -972,7 +972,13 @@ static void CaptureAndShow() {
         previewW = kMaxPreviewW;
     }
 
-    int x = pt.x + 30, y = pt.y + 30;
+    // 计算当前快照所在格子，让鼠标正好落在这格中心
+    int curCol = (g_trayNumber - 1) % kCols;
+    int curRow = (g_trayNumber - 1) / kCols;
+    double fx = (curCol + 0.5) / kCols;  // 格子在总览图中的比例位置
+    double fy = (curRow + 0.5) / kRows;
+    int x = pt.x - (int)(fx * previewW);
+    int y = pt.y - (int)(fy * previewH);
     if (x + previewW > sw) x = pt.x - previewW - 30;
     if (y + previewH > sh) y = pt.y - previewH - 30;
     if (x < 0) x = 10;
