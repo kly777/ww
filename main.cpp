@@ -584,11 +584,14 @@ void SwitchSnapshot(int slot) {
         HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
         RECT rcB = {0, 0, snap.screenW, snap.screenH};
         FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
-        // 第二遍：逐显示器绘制 rcWork
+        // 第二遍：逐显示器绘制 rcWork（隐藏预览窗口避免入镜）
+        BOOL hadPreview = g_previewWnd && IsWindow(g_previewWnd);
+        if (hadPreview) ShowWindow(g_previewWnd, SW_HIDE);
         ctx.hdcMem = hdcMem;
         ctx.bmpW = snap.screenW;
         ctx.bmpH = snap.screenH;
         EnumDisplayMonitors(NULL, NULL, CapDrawProc, (LPARAM)&ctx);
+        if (hadPreview) ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
         SelectObject(hdcMem, hOld);
         DeleteDC(hdcMem);
         ReleaseDC(NULL, hdcScreen);
