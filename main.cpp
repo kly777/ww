@@ -4,11 +4,11 @@
 #define _WIN32_WINNT 0x0A00
 #define NTDDI_VERSION 0x0A000007
 
+#include <io.h>
 #include <ole2.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <stdio.h>
-#include <io.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -29,7 +29,8 @@ enum class HotkeyId : int {
     ArrowUp = 10,
     ArrowDown,
     ArrowLeft,
-    ArrowRight
+    ArrowRight,
+    Screenshot = 14
 };
 enum class MenuId : int { AutoStart = 1001, Exit = 1000 };
 
@@ -56,14 +57,14 @@ static const int kNavMap[10][4] = {
 #ifdef RELEASE
 #define LOG(fmt, ...) ((void)0)
 #else
-#define LOG(fmt, ...)                           \
-    do {                                        \
-        printf(fmt, ##__VA_ARGS__);             \
-        if (g_logFile) {                        \
+#define LOG(fmt, ...)                               \
+    do {                                            \
+        printf(fmt, ##__VA_ARGS__);                 \
+        if (g_logFile) {                            \
             fprintf(g_logFile, fmt, ##__VA_ARGS__); \
-            fflush(g_logFile);                  \
-        }                                       \
-        fflush(stdout);                         \
+            fflush(g_logFile);                      \
+        }                                           \
+        fflush(stdout);                             \
     } while (0)
 #endif
 
@@ -77,6 +78,9 @@ struct WinInfo {
 
 struct Snapshot {
     std::vector<WinInfo> windows;
+    HBITMAP screenBmp = NULL;
+    int screenW = 0, screenH = 0;
+    RECT capUnion = {0, 0, 0, 0};  // 截屏时的 rcWork 并集（用于坐标映射）
 };
 
 // ---- 全局 ----
@@ -104,6 +108,10 @@ static GUID g_currentDesktopId = GUID_NULL;
 
 static HWND g_hWnd = NULL;
 static FILE* g_logFile = NULL;  // 文件日志句柄，仅 #ifndef RELEASE 有效
+
+// ---- 工作区总览预览 ----
+static HWND g_previewWnd = NULL;
+static UINT g_previewTimer = 0;
 
 // ---- 工具函数 ----
 std::string WideToUtf8(const wchar_t* src) {
@@ -308,7 +316,14 @@ void RestoreSnapshot(int num) {
             SetWindowPlacement(w.hwnd, &wp);
             wp.showCmd = w.showCmd;
             SetWindowPlacement(w.hwnd, &wp);
-            // ShowWindow(w.hwnd, w.showCmd);
+        } else if (w.showCmd == SW_MAXIMIZE && !iconic) {
+            // 已在另一显示器最大化；先还原到目标位置再最大化，实现跨屏移动
+            LOG("[恢复] [%zu] 跨屏最大化: SW_SHOWNOACTIVATE -> SW_MAXIMIZE",
+                i);
+            wp.showCmd = SW_SHOWNOACTIVATE;
+            SetWindowPlacement(w.hwnd, &wp);
+            wp.showCmd = SW_MAXIMIZE;
+            SetWindowPlacement(w.hwnd, &wp);
         } else {
             wp.showCmd = w.showCmd;
             SetWindowPlacement(w.hwnd, &wp);
@@ -415,10 +430,10 @@ void RestoreSnapshot(int num) {
                                                                : "正常";
 
         bool showCmdMatch = (w.showCmd == actualShowCmd);
-        bool rectMatch = (w.rect.left == actualRect.left &&
-                          w.rect.top == actualRect.top &&
-                          w.rect.right == actualRect.right &&
-                          w.rect.bottom == actualRect.bottom);
+        bool rectMatch =
+            (w.rect.left == actualRect.left && w.rect.top == actualRect.top &&
+             w.rect.right == actualRect.right &&
+             w.rect.bottom == actualRect.bottom);
 
         if (!showCmdMatch) {
             LOG("[验证] [!] [%zu] \"%s\" 状态不一致! 期望=%s(%u) 实际=%s(%u)\n",
@@ -487,28 +502,107 @@ static void SyncDesktopState() {
     UpdateTrayIcon();
 }
 
-// 再次按同一数字 → 回到上一个快照，实现 Ctrl+N 双击在最近两个工作区间切换
-void SwitchSnapshot(int slot) {
+// EnumDisplayMonitors 回调上下文
+struct CapCtx {
+    HDC hdcMem;
+    HDC hdcScreen;
+    int vsX, vsY, vsW, vsH;
+    int bmpW, bmpH;
+    RECT workUnion;  // 所有 rcWork 的并集
+};
+
+static BOOL CALLBACK CapMonitorProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
+    CapCtx* c = (CapCtx*)lp;
+    MONITORINFO mi = {sizeof(mi)};
+    if (!GetMonitorInfoW(hMon, &mi)) return TRUE;
+    // 累计 rcWork 并集
+    if (c->workUnion.left == c->workUnion.right) {
+        c->workUnion = mi.rcWork;
+    } else {
+        if (mi.rcWork.left < c->workUnion.left)
+            c->workUnion.left = mi.rcWork.left;
+        if (mi.rcWork.top < c->workUnion.top)
+            c->workUnion.top = mi.rcWork.top;
+        if (mi.rcWork.right > c->workUnion.right)
+            c->workUnion.right = mi.rcWork.right;
+        if (mi.rcWork.bottom > c->workUnion.bottom)
+            c->workUnion.bottom = mi.rcWork.bottom;
+    }
+    return TRUE;
+}
+
+// 第二次遍历：实际绘制
+static BOOL CALLBACK CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
+    CapCtx* c = (CapCtx*)lp;
+    MONITORINFO mi = {sizeof(mi)};
+    if (!GetMonitorInfoW(hMon, &mi)) return TRUE;
+    int mx = mi.rcWork.left - c->workUnion.left;
+    int my = mi.rcWork.top - c->workUnion.top;
+    int mw = mi.rcWork.right - mi.rcWork.left;
+    int mh = mi.rcWork.bottom - mi.rcWork.top;
+    int uw = c->workUnion.right - c->workUnion.left;
+    int uh = c->workUnion.bottom - c->workUnion.top;
+    int dx = mx * c->bmpW / uw;
+    int dy = my * c->bmpH / uh;
+    int dw = mw * c->bmpW / uw;
+    int dh = mh * c->bmpH / uh;
+    SetStretchBltMode(c->hdcMem, COLORONCOLOR);
+    StretchBlt(c->hdcMem, dx, dy, dw, dh, c->hdcScreen,
+               mi.rcWork.left, mi.rcWork.top, mw, mh, SRCCOPY);
+    return TRUE;
+}
+
+// ---- 工作区截图 ----
+static void CaptureScreenShot(int slot) {
+    Snapshot& snap = g_snapshots[slot];
+    if (snap.screenBmp) DeleteObject(snap.screenBmp);
+    HDC hdcScreen = GetDC(NULL);
+    // 第一遍：收集所有 rcWork 并集
+    CapCtx ctx = {NULL, hdcScreen};
+    ctx.workUnion = {0, 0, 0, 0};
+    EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
+    snap.capUnion = ctx.workUnion;
+    int uw = ctx.workUnion.right - ctx.workUnion.left;
+    int uh = ctx.workUnion.bottom - ctx.workUnion.top;
+    if (uw <= 0 || uh <= 0) {
+        ReleaseDC(NULL, hdcScreen);
+        return;
+    }
+    snap.screenW = uw / 4;
+    snap.screenH = uh / 4;
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    snap.screenBmp =
+        CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
+    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
+    RECT rcB = {0, 0, snap.screenW, snap.screenH};
+    FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    // 第二遍：逐显示器绘制 rcWork
+    ctx.hdcMem = hdcMem;
+    ctx.bmpW = snap.screenW;
+    ctx.bmpH = snap.screenH;
+    EnumDisplayMonitors(NULL, NULL, CapDrawProc, (LPARAM)&ctx);
+    SelectObject(hdcMem, hOld);
+    DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
+}
+
+// 直接切换到指定快照（不含双击回退逻辑）
+void SwitchToSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
+    if (slot == g_trayNumber) return;
 
     g_windows.clear();
     g_zOrderCounter = 0;
     EnumWindows(EnumWindowCallback, 0);
-
     SyncDesktopState();
 
-    if (slot == g_trayNumber) {
-        slot = g_prevTrayNumber;
-        if (slot == g_trayNumber) return;
-    }
-
     SaveSnapshot(g_trayNumber, g_windows);
+    CaptureScreenShot(g_trayNumber);
 
     g_prevTrayNumber = g_trayNumber;
     g_trayNumber = slot;
 
     RestoreSnapshot(slot);
-
     UpdateTrayIcon();
     LOG("[切换] %d -> %d\n", g_prevTrayNumber, slot);
 }
@@ -670,6 +764,8 @@ void RegisterHotkeys(HWND hwnd) {
                    MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_LEFT);
     RegisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowRight),
                    MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_RIGHT);
+    RegisterHotKey(hwnd, static_cast<int>(HotkeyId::Screenshot),
+                   MOD_ALT | MOD_NOREPEAT, 'S');
 }
 
 void UnregisterHotkeys(HWND hwnd) {
@@ -680,6 +776,7 @@ void UnregisterHotkeys(HWND hwnd) {
     UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowDown));
     UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowLeft));
     UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::ArrowRight));
+    UnregisterHotKey(hwnd, static_cast<int>(HotkeyId::Screenshot));
 }
 
 // ---- 开机启动 ----
@@ -716,6 +813,236 @@ void SetAutoStart(BOOL enable) {
     RegCloseKey(hKey);
 }
 
+// ---- 工作区总览预览 (snapshot 1-9 拼成 3×3 大图) ----
+static const wchar_t* PREVIEW_CLASS = L"WW_Preview";
+static HBITMAP g_overviewBmp = NULL;
+static int g_overviewW = 0, g_overviewH = 0;
+
+LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                LPARAM lParam) {
+    switch (msg) {
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            if (g_overviewBmp) {
+                RECT rc;
+                GetClientRect(hwnd, &rc);
+                int border = 6;
+                // 先填深色背景，消除白边
+                RECT rcFill = {0, 0, rc.right, rc.bottom};
+                HBRUSH hBrBg = CreateSolidBrush(RGB(40, 40, 40));
+                FillRect(hdc, &rcFill, hBrBg);
+                DeleteObject(hBrBg);
+                // 截图内缩 border px
+                HDC memDC = CreateCompatibleDC(hdc);
+                HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, g_overviewBmp);
+                SetStretchBltMode(hdc, COLORONCOLOR);
+                StretchBlt(hdc, border, border,
+                           rc.right - border * 2, rc.bottom - border * 2,
+                           memDC, 0, 0, g_overviewW, g_overviewH, SRCCOPY);
+                SelectObject(memDC, oldBmp);
+                DeleteDC(memDC);
+                // 6px 外边框（笔宽中心在截图边缘，不侵入内容）
+                int hb = border / 2;
+                HPEN hPen = CreatePen(PS_SOLID, border, RGB(40, 40, 40));
+                HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+                HBRUSH hOldBr =
+                    (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                Rectangle(hdc, hb, hb, rc.right - hb, rc.bottom - hb);
+                SelectObject(hdc, hOldBr);
+                SelectObject(hdc, hOldPen);
+                DeleteObject(hPen);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            // 先隐藏自身再切换，避免被截入快照
+            ShowWindow(hwnd, SW_HIDE);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int mx = LOWORD(lParam);
+            int my = HIWORD(lParam);
+            int col = mx * 3 / (rc.right - rc.left);
+            int row = my * 3 / (rc.bottom - rc.top);
+            if (col >= 0 && col < 3 && row >= 0 && row < 3) {
+                int slot = row * 3 + col + 1;
+                SwitchToSnapshot(slot);
+            }
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+        case WM_KEYDOWN:
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_TIMER:
+            if (wParam == g_previewTimer) DestroyWindow(hwnd);
+            return 0;
+        case WM_DESTROY:
+            if (g_previewTimer) {
+                KillTimer(hwnd, g_previewTimer);
+                g_previewTimer = 0;
+            }
+            g_previewWnd = NULL;
+            if (g_overviewBmp) {
+                DeleteObject(g_overviewBmp);
+                g_overviewBmp = NULL;
+                g_overviewW = g_overviewH = 0;
+            }
+            break;
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+// ---- 工作区总览合成 ----
+static void BuildOverviewBitmap() {
+    if (g_overviewBmp) { DeleteObject(g_overviewBmp); g_overviewBmp = NULL; }
+
+    // 用当前工作区并集（去任务栏），与截图尺寸基准一致
+    CapCtx ctx = {NULL, NULL};
+    ctx.workUnion = {0, 0, 0, 0};
+    EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
+    int sw = ctx.workUnion.right - ctx.workUnion.left;
+    int sh = ctx.workUnion.bottom - ctx.workUnion.top;
+    if (sw <= 0) sw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    if (sh <= 0) sh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    constexpr int kCols = 3, kRows = 3;
+    int cellW = sw / kCols, cellH = sh / kRows;
+    int totalW = cellW * kCols, totalH = cellH * kRows;
+
+    HDC hdcScreen = GetDC(NULL);
+    HDC hdcComp = CreateCompatibleDC(hdcScreen);
+    g_overviewBmp = CreateCompatibleBitmap(hdcScreen, totalW, totalH);
+    g_overviewW = totalW;
+    g_overviewH = totalH;
+    HBITMAP hOldComp = (HBITMAP)SelectObject(hdcComp, g_overviewBmp);
+
+    RECT rcBg = {0, 0, totalW, totalH};
+    FillRect(hdcComp, &rcBg, (HBRUSH)GetStockObject(WHITE_BRUSH));
+
+    HFONT hFont =
+        CreateFontW(20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    HFONT hOldFont = (HFONT)SelectObject(hdcComp, hFont);
+    SetBkMode(hdcComp, TRANSPARENT);
+
+    int hasAny = 0;
+    for (int slot = 1; slot <= 9; slot++) {
+        int col = (slot - 1) % kCols, row = (slot - 1) / kCols;
+        int ox = col * cellW, oy = row * cellH;
+        Snapshot& snap = g_snapshots[slot];
+
+        RECT rcCell = {ox, oy, ox + cellW, oy + cellH};
+        if (snap.screenBmp) {
+            HDC hdcSrc = CreateCompatibleDC(hdcScreen);
+            HBITMAP hOldSrc = (HBITMAP)SelectObject(hdcSrc, snap.screenBmp);
+            // 保持比例，靠左上角填充
+            double sx = (double)cellW / snap.screenW;
+            double sy = (double)cellH / snap.screenH;
+            double scale = sx < sy ? sx : sy;
+            int dw = (int)(snap.screenW * scale);
+            int dh = (int)(snap.screenH * scale);
+            SetStretchBltMode(hdcComp, COLORONCOLOR);
+            StretchBlt(hdcComp, ox, oy, dw, dh, hdcSrc, 0, 0,
+                       snap.screenW, snap.screenH, SRCCOPY);
+            SelectObject(hdcSrc, hOldSrc);
+            DeleteDC(hdcSrc);
+            hasAny++;
+        } else {
+            // 空快照：浅灰背景
+            HBRUSH hBr = CreateSolidBrush(RGB(248, 248, 250));
+            FillRect(hdcComp, &rcCell, hBr);
+            DeleteObject(hBr);
+        }
+
+        // 网格线
+        HPEN hPen = CreatePen(PS_SOLID, 3, RGB(160, 160, 160));
+        HPEN hOldPen = (HPEN)SelectObject(hdcComp, hPen);
+        MoveToEx(hdcComp, ox, oy, NULL);
+        LineTo(hdcComp, ox + cellW, oy);
+        LineTo(hdcComp, ox + cellW, oy + cellH);
+        LineTo(hdcComp, ox, oy + cellH);
+        LineTo(hdcComp, ox, oy);
+        SelectObject(hdcComp, hOldPen);
+        DeleteObject(hPen);
+    }
+
+    if (hasAny == 0) {
+        SetTextColor(hdcComp, RGB(160, 160, 160));
+        const wchar_t* hint =
+            L"Ctrl+1~9 to save · Ctrl+N to switch · Alt+S to overview";
+        SIZE ts;
+        GetTextExtentPoint32W(hdcComp, hint, (int)wcslen(hint), &ts);
+        TextOutW(hdcComp, (totalW - ts.cx) / 2, totalH / 2 - ts.cy / 2, hint,
+                 (int)wcslen(hint));
+    }
+
+    SelectObject(hdcComp, hOldFont);
+    DeleteObject(hFont);
+    SelectObject(hdcComp, hOldComp);
+    DeleteDC(hdcComp);
+    ReleaseDC(NULL, hdcScreen);
+}
+
+// ---- 预览窗口 ----
+static void ShowOverviewWindow(POINT mousePt) {
+    constexpr int kMaxPreviewW = 1650, kCols = 3, kRows = 3;
+    int previewW = g_overviewW, previewH = g_overviewH;
+    if (previewW > kMaxPreviewW) {
+        previewH = previewH * kMaxPreviewW / previewW;
+        previewW = kMaxPreviewW;
+    }
+
+    int curCol = (g_trayNumber - 1) % kCols;
+    int curRow = (g_trayNumber - 1) / kCols;
+    int x = mousePt.x - (int)((curCol + 0.5) / kCols * previewW);
+    int y = mousePt.y - (int)((curRow + 0.5) / kRows * previewH);
+
+    HMONITOR hMon = MonitorFromPoint(mousePt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {sizeof(mi)};
+    GetMonitorInfoW(hMon, &mi);
+    if (x + previewW > mi.rcWork.right) x = mi.rcWork.right - previewW;
+    if (y + previewH > mi.rcWork.bottom) y = mi.rcWork.bottom - previewH;
+    if (x < mi.rcWork.left) x = mi.rcWork.left;
+    if (y < mi.rcWork.top) y = mi.rcWork.top;
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSW wc = {};
+        wc.lpfnWndProc = PreviewWndProc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        wc.lpszClassName = PREVIEW_CLASS;
+        RegisterClassW(&wc);
+        registered = true;
+    }
+
+    g_previewWnd =
+        CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, PREVIEW_CLASS,
+                        L"Overview", WS_POPUP, x, y, previewW, previewH,
+                        NULL, NULL, GetModuleHandle(NULL), NULL);
+    if (g_previewWnd) {
+        ShowWindow(g_previewWnd, SW_SHOWNOACTIVATE);
+        UpdateWindow(g_previewWnd);
+        g_previewTimer = SetTimer(g_previewWnd, 1, 8000, NULL);
+    }
+}
+
+static void CaptureAndShow() {
+    // 先销毁旧窗口（会清理旧位图），再建新图开新窗
+    if (g_previewWnd && IsWindow(g_previewWnd))
+        DestroyWindow(g_previewWnd);
+    BuildOverviewBitmap();
+    POINT pt;
+    GetCursorPos(&pt);
+    ShowOverviewWindow(pt);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
@@ -750,14 +1077,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_HOTKEY: {
             int id = (int)wParam;
+            if (id == static_cast<int>(HotkeyId::Screenshot)) {
+                CaptureAndShow();
+                return 0;
+            }
             int slot = id - static_cast<int>(HotkeyId::Digit);
             if (slot >= 0 && slot <= 9) {
-                SwitchSnapshot(slot);
+                // 双击同一数字 → 回到上一个快照
+                if (slot == g_trayNumber) {
+                    int prev = g_prevTrayNumber;
+                    if (prev != g_trayNumber) SwitchToSnapshot(prev);
+                } else {
+                    SwitchToSnapshot(slot);
+                }
             } else {
                 int dir = id - static_cast<int>(HotkeyId::ArrowUp);
                 if (dir >= 0 && dir <= 3) {
                     int target = kNavMap[g_trayNumber][dir];
-                    if (target != g_trayNumber) SwitchSnapshot(target);
+                    if (target != g_trayNumber) SwitchToSnapshot(target);
                 }
             }
             return 0;
@@ -833,13 +1170,11 @@ int main() {
         *(lastSlash + 1) = L'\0';
         wcscat_s(logPath, MAX_PATH, L"ww.log");
         HANDLE hFile = CreateFileW(logPath, FILE_APPEND_DATA,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                                   NULL);
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             int fd = _open_osfhandle((intptr_t)hFile, 0);
-            if (fd != -1)
-                g_logFile = _fdopen(fd, "a");
+            if (fd != -1) g_logFile = _fdopen(fd, "a");
         }
     }
 #endif
@@ -854,7 +1189,7 @@ int main() {
 
     LOG("\n=== 托盘图标已创建 ===\n");
     LOG("Ctrl+0~9 切换九宫格 | Ctrl+Alt+方向键 在格子间移动 | "
-        "右键托盘选择数字或退出\n\n");
+        "Alt+S 截屏预览 | 右键托盘选择数字或退出\n\n");
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
