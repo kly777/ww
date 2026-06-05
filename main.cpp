@@ -78,6 +78,8 @@ struct WinInfo {
 
 struct Snapshot {
     std::vector<WinInfo> windows;
+    HBITMAP screenBmp = NULL;  // 离开快照时的全屏截图
+    int screenW = 0, screenH = 0;
 };
 
 // ---- 全局 ----
@@ -509,6 +511,27 @@ void SwitchSnapshot(int slot) {
 
     SaveSnapshot(g_trayNumber, g_windows);
 
+    // 截取当前屏幕存入快照，供 Alt+S 总览使用
+    {
+        Snapshot& snap = g_snapshots[g_trayNumber];
+        if (snap.screenBmp) DeleteObject(snap.screenBmp);
+        int sw = GetSystemMetrics(SM_CXSCREEN);
+        int sh = GetSystemMetrics(SM_CYSCREEN);
+        snap.screenW = sw / 2;   // 缩到 1/2 省内存
+        snap.screenH = sh / 2;
+        HDC hdcScreen = GetDC(NULL);
+        HDC hdcMem = CreateCompatibleDC(hdcScreen);
+        snap.screenBmp =
+            CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
+        HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
+        SetStretchBltMode(hdcMem, HALFTONE);
+        StretchBlt(hdcMem, 0, 0, snap.screenW, snap.screenH, hdcScreen, 0, 0,
+                   sw, sh, SRCCOPY);
+        SelectObject(hdcMem, hOld);
+        DeleteDC(hdcMem);
+        ReleaseDC(NULL, hdcScreen);
+    }
+
     g_prevTrayNumber = g_trayNumber;
     g_trayNumber = slot;
 
@@ -729,30 +752,6 @@ static const wchar_t* PREVIEW_CLASS = L"WW_Preview";
 static HBITMAP g_overviewBmp = NULL;
 static int g_overviewW = 0, g_overviewH = 0;
 
-// 用 PrintWindow 截取单个窗口客户区，返回 HBITMAP 及宽高
-static HBITMAP CaptureWindow(HWND hwnd, int* outW, int* outH) {
-    RECT r;
-    if (!GetWindowRect(hwnd, &r)) return NULL;
-    int w = r.right - r.left, h = r.bottom - r.top;
-    if (w <= 4 || h <= 4) return NULL;
-    HDC hdcScreen = GetDC(NULL);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    HBITMAP hBmp = CreateCompatibleBitmap(hdcScreen, w, h);
-    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBmp);
-    // PW_RENDERFULLCONTENT: 尝试捕获 D3D 窗口内容 (Win8.1+)
-    if (!PrintWindow(hwnd, hdcMem, PW_RENDERFULLCONTENT)) {
-        // 回退：FillRect 灰色占位
-        RECT rc = {0, 0, w, h};
-        FillRect(hdcMem, &rc, (HBRUSH)GetStockObject(LTGRAY_BRUSH));
-    }
-    SelectObject(hdcMem, hOld);
-    DeleteDC(hdcMem);
-    ReleaseDC(NULL, hdcScreen);
-    if (outW) *outW = w;
-    if (outH) *outH = h;
-    return hBmp;
-}
-
 LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                                 LPARAM lParam) {
     switch (msg) {
@@ -800,7 +799,6 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
 }
 
 static void CaptureAndShow() {
-    // 销毁旧预览
     if (g_previewWnd && IsWindow(g_previewWnd))
         DestroyWindow(g_previewWnd);
 
@@ -809,8 +807,6 @@ static void CaptureAndShow() {
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
-    // ---- 合成 3×3 总览图 ----
-    // 每个 snapshot 占据 sw/3 × sh/3 的网格单元
     constexpr int kCols = 3, kRows = 3;
     int cellW = sw / kCols;
     int cellH = sh / kRows;
@@ -824,16 +820,20 @@ static void CaptureAndShow() {
     g_overviewH = totalH;
     HBITMAP hOldComp = (HBITMAP)SelectObject(hdcComp, g_overviewBmp);
 
-    // 白色背景
     RECT rcBg = {0, 0, totalW, totalH};
     FillRect(hdcComp, &rcBg, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
-    HFONT hFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+    int fontSize = cellH / 12;
+    if (fontSize < 12) fontSize = 12;
+    if (fontSize > 40) fontSize = 40;
+    HFONT hFont = CreateFontW(fontSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
+                              FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                               CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                              DEFAULT_PITCH, L"Consolas");
+                              DEFAULT_PITCH, L"Segoe UI");
     HFONT hOldFont = (HFONT)SelectObject(hdcComp, hFont);
     SetBkMode(hdcComp, TRANSPARENT);
+
+    int hasAny = 0;
 
     for (int slot = 1; slot <= 9; slot++) {
         int col = (slot - 1) % kCols;
@@ -841,8 +841,30 @@ static void CaptureAndShow() {
         int ox = col * cellW;
         int oy = row * cellH;
 
-        // 绘制网格线和标签（即使快照为空也画）
-        HPEN hPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
+        Snapshot& snap = g_snapshots[slot];
+
+        // 背景填充
+        RECT rcCell = {ox, oy, ox + cellW, oy + cellH};
+        if (snap.screenBmp) {
+            // 有截图：直接绘制
+            HDC hdcSrc = CreateCompatibleDC(hdcScreen);
+            HBITMAP hOldSrc =
+                (HBITMAP)SelectObject(hdcSrc, snap.screenBmp);
+            SetStretchBltMode(hdcComp, HALFTONE);
+            StretchBlt(hdcComp, ox, oy, cellW, cellH, hdcSrc, 0, 0,
+                       snap.screenW, snap.screenH, SRCCOPY);
+            SelectObject(hdcSrc, hOldSrc);
+            DeleteDC(hdcSrc);
+            hasAny++;
+        } else {
+            // 空快照：浅灰背景
+            HBRUSH hBr = CreateSolidBrush(RGB(248, 248, 250));
+            FillRect(hdcComp, &rcCell, hBr);
+            DeleteObject(hBr);
+        }
+
+        // 网格线
+        HPEN hPen = CreatePen(PS_SOLID, 1, RGB(210, 210, 210));
         HPEN hOldPen = (HPEN)SelectObject(hdcComp, hPen);
         MoveToEx(hdcComp, ox, oy, NULL);
         LineTo(hdcComp, ox + cellW, oy);
@@ -852,45 +874,28 @@ static void CaptureAndShow() {
         SelectObject(hdcComp, hOldPen);
         DeleteObject(hPen);
 
+        // 槽位编号
         wchar_t label[4];
         swprintf(label, 4, L"%d", slot);
-        SetTextColor(hdcComp, RGB(120, 120, 120));
-        TextOutW(hdcComp, ox + 6, oy + 4, label, (int)wcslen(label));
+        int pad = fontSize / 4;
+        RECT rcLabel = {ox + pad, oy + pad,
+                        ox + pad + fontSize + 10, oy + pad + fontSize + 8};
+        HBRUSH hBrLabel = CreateSolidBrush(RGB(30, 30, 30));
+        FillRect(hdcComp, &rcLabel, hBrLabel);
+        DeleteObject(hBrLabel);
+        SetTextColor(hdcComp, RGB(255, 255, 255));
+        TextOutW(hdcComp, ox + pad + 5, oy + pad + 2, label,
+                 (int)wcslen(label));
+    }
 
-        Snapshot& snap = g_snapshots[slot];
-        if (snap.windows.empty()) continue;
-
-        double sx = 1.0 / kCols;
-        double sy = 1.0 / kRows;
-        HRGN hRgn = CreateRectRgn(ox, oy, ox + cellW, oy + cellH);
-        SelectClipRgn(hdcComp, hRgn);
-
-        for (const auto& w : snap.windows) {
-            if (w.showCmd == SW_MINIMIZE) continue;
-            if (!IsWindow(w.hwnd)) continue;
-
-            int capW, capH;
-            HBITMAP hCap = CaptureWindow(w.hwnd, &capW, &capH);
-            if (!hCap) continue;
-
-            int dx = ox + (int)(w.rect.left * sx);
-            int dy = oy + (int)(w.rect.top * sy);
-            int dw = (int)((w.rect.right - w.rect.left) * sx);
-            int dh = (int)((w.rect.bottom - w.rect.top) * sy);
-            if (dw < 4) dw = 4;
-            if (dh < 4) dh = 4;
-
-            HDC hdcCap = CreateCompatibleDC(hdcScreen);
-            HBITMAP hOldCap = (HBITMAP)SelectObject(hdcCap, hCap);
-            SetStretchBltMode(hdcComp, HALFTONE);
-            StretchBlt(hdcComp, dx, dy, dw, dh, hdcCap, 0, 0, capW, capH,
-                       SRCCOPY);
-            SelectObject(hdcCap, hOldCap);
-            DeleteDC(hdcCap);
-            DeleteObject(hCap);
-        }
-        SelectClipRgn(hdcComp, NULL);
-        DeleteObject(hRgn);
+    if (hasAny == 0) {
+        SetTextColor(hdcComp, RGB(160, 160, 160));
+        const wchar_t* hint =
+            L"Ctrl+1~9 to save · Ctrl+N to switch · Alt+S to overview";
+        SIZE ts;
+        GetTextExtentPoint32W(hdcComp, hint, (int)wcslen(hint), &ts);
+        TextOutW(hdcComp, (totalW - ts.cx) / 2, totalH / 2 - ts.cy / 2, hint,
+                 (int)wcslen(hint));
     }
 
     SelectObject(hdcComp, hOldFont);
@@ -899,7 +904,7 @@ static void CaptureAndShow() {
     DeleteDC(hdcComp);
     ReleaseDC(NULL, hdcScreen);
 
-    // ---- 显示预览窗口 ----
+    // ---- 预览窗口 ----
     constexpr int kMaxPreviewW = 650;
     int previewW = totalW, previewH = totalH;
     if (previewW > kMaxPreviewW) {
