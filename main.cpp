@@ -900,8 +900,15 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
 static void BuildOverviewBitmap() {
     if (g_overviewBmp) { DeleteObject(g_overviewBmp); g_overviewBmp = NULL; }
 
-    int sw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    int sh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    // 用当前工作区并集（去任务栏），与截图尺寸基准一致
+    CapCtx ctx = {NULL, NULL};
+    ctx.workUnion = {0, 0, 0, 0};
+    EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
+    int sw = ctx.workUnion.right - ctx.workUnion.left;
+    int sh = ctx.workUnion.bottom - ctx.workUnion.top;
+    if (sw <= 0) sw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    if (sh <= 0) sh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
     constexpr int kCols = 3, kRows = 3;
     int cellW = sw / kCols, cellH = sh / kRows;
     int totalW = cellW * kCols, totalH = cellH * kRows;
@@ -933,8 +940,14 @@ static void BuildOverviewBitmap() {
         if (snap.screenBmp) {
             HDC hdcSrc = CreateCompatibleDC(hdcScreen);
             HBITMAP hOldSrc = (HBITMAP)SelectObject(hdcSrc, snap.screenBmp);
+            // 保持比例，靠左上角填充
+            double sx = (double)cellW / snap.screenW;
+            double sy = (double)cellH / snap.screenH;
+            double scale = sx < sy ? sx : sy;
+            int dw = (int)(snap.screenW * scale);
+            int dh = (int)(snap.screenH * scale);
             SetStretchBltMode(hdcComp, COLORONCOLOR);
-            StretchBlt(hdcComp, ox, oy, cellW, cellH, hdcSrc, 0, 0,
+            StretchBlt(hdcComp, ox, oy, dw, dh, hdcSrc, 0, 0,
                        snap.screenW, snap.screenH, SRCCOPY);
             SelectObject(hdcSrc, hOldSrc);
             DeleteDC(hdcSrc);
