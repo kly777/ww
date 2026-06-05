@@ -80,6 +80,8 @@ struct Snapshot {
     std::vector<WinInfo> windows;
     HBITMAP screenBmp = NULL;  // 离开快照时的全屏截图
     int screenW = 0, screenH = 0;
+    int capX = 0, capY = 0;    // 截屏时的虚拟屏幕原点
+    int capVW = 0, capVH = 0;  // 截屏时的虚拟屏幕宽高
 };
 
 // ---- 全局 ----
@@ -548,6 +550,10 @@ static BOOL CALLBACK CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
 static void CaptureScreenShot(int slot) {
     Snapshot& snap = g_snapshots[slot];
     if (snap.screenBmp) DeleteObject(snap.screenBmp);
+    snap.capX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    snap.capY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    snap.capVW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    snap.capVH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     HDC hdcScreen = GetDC(NULL);
     // 第一遍：收集所有 rcWork 并集
     CapCtx ctx = {NULL, hdcScreen};
@@ -898,11 +904,8 @@ static void BuildOverviewBitmap() {
     RECT rcBg = {0, 0, totalW, totalH};
     FillRect(hdcComp, &rcBg, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
-    int fontSize = cellH / 12;
-    if (fontSize < 12) fontSize = 12;
-    if (fontSize > 40) fontSize = 40;
     HFONT hFont =
-        CreateFontW(fontSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        CreateFontW(20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                     CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     HFONT hOldFont = (HFONT)SelectObject(hdcComp, hFont);
@@ -924,6 +927,84 @@ static void BuildOverviewBitmap() {
             SelectObject(hdcSrc, hOldSrc);
             DeleteDC(hdcSrc);
             hasAny++;
+            // 绘制窗口覆膜：淡色填充 + 深色边框 + 标题
+            double sx = (double)cellW / snap.capVW;
+            double sy = (double)cellH / snap.capVH;
+            for (const auto& w : snap.windows) {
+                if (w.showCmd == SW_MINIMIZE) continue;
+                int wx = ox + (int)((w.rect.left - snap.capX) * sx);
+                int wy = oy + (int)((w.rect.top - snap.capY) * sy);
+                int ww = (int)((w.rect.right - w.rect.left) * sx);
+                int wh = (int)((w.rect.bottom - w.rect.top) * sy);
+                if (ww < 6) ww = 6;
+                if (wh < 6) wh = 6;
+                RECT rcW = {wx, wy, wx + ww, wy + wh};
+                // 半透明覆膜（AlphaBlend）
+                {
+                    BITMAPINFO bmi = {};
+                    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                    bmi.bmiHeader.biWidth = ww;
+                    bmi.bmiHeader.biHeight = -wh;  // top-down
+                    bmi.bmiHeader.biPlanes = 1;
+                    bmi.bmiHeader.biBitCount = 32;
+                    bmi.bmiHeader.biCompression = BI_RGB;
+                    BYTE* bits;
+                    HBITMAP hOverlay = CreateDIBSection(
+                        hdcComp, &bmi, DIB_RGB_COLORS, (void**)&bits, NULL, 0);
+                    if (hOverlay && bits) {
+                        // 预乘 Alpha: 白色 ~40% 不透明
+                        BYTE a = 100, r = 255 * a / 255, g = 255 * a / 255,
+                             b = 255 * a / 255;
+                        for (int i = 0; i < ww * wh; i++) {
+                            bits[i * 4] = b;
+                            bits[i * 4 + 1] = g;
+                            bits[i * 4 + 2] = r;
+                            bits[i * 4 + 3] = a;
+                        }
+                        HDC hdcOv = CreateCompatibleDC(hdcComp);
+                        HBITMAP hOldOv =
+                            (HBITMAP)SelectObject(hdcOv, hOverlay);
+                        BLENDFUNCTION bf = {AC_SRC_OVER, 0, 100,
+                                            AC_SRC_ALPHA};
+                        AlphaBlend(hdcComp, wx, wy, ww, wh, hdcOv, 0, 0, ww,
+                                   wh, bf);
+                        SelectObject(hdcOv, hOldOv);
+                        DeleteDC(hdcOv);
+                    }
+                    if (hOverlay) DeleteObject(hOverlay);
+                }
+                // 深色边框
+                HPEN hp = CreatePen(PS_SOLID, 2, RGB(40, 40, 40));
+                HPEN hOldP = (HPEN)SelectObject(hdcComp, hp);
+                HBRUSH hOldB =
+                    (HBRUSH)SelectObject(hdcComp, GetStockObject(NULL_BRUSH));
+                Rectangle(hdcComp, wx, wy, wx + ww, wy + wh);
+                SelectObject(hdcComp, hOldB);
+                SelectObject(hdcComp, hOldP);
+                DeleteObject(hp);
+                // 窗口标题
+                int wTitleLen = MultiByteToWideChar(
+                    CP_UTF8, 0, w.title.c_str(), -1, NULL, 0);
+                if (wTitleLen > 1) {
+                    std::vector<wchar_t> wTitle(wTitleLen);
+                    MultiByteToWideChar(CP_UTF8, 0, w.title.c_str(), -1,
+                                        wTitle.data(), wTitleLen);
+                    SetTextColor(hdcComp, RGB(20, 20, 20));
+                    SetBkMode(hdcComp, TRANSPARENT);
+                    HFONT hFt = CreateFontW(
+                        18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                        DEFAULT_PITCH, L"Segoe UI");
+                    HFONT hOldFt =
+                        (HFONT)SelectObject(hdcComp, hFt);
+                    DrawTextW(hdcComp, wTitle.data(), -1, &rcW,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE |
+                                  DT_NOPREFIX | DT_END_ELLIPSIS);
+                    SelectObject(hdcComp, hOldFt);
+                    DeleteObject(hFt);
+                }
+            }
         } else {
             // 空快照：浅灰背景
             HBRUSH hBr = CreateSolidBrush(RGB(248, 248, 250));
@@ -941,19 +1022,6 @@ static void BuildOverviewBitmap() {
         LineTo(hdcComp, ox, oy);
         SelectObject(hdcComp, hOldPen);
         DeleteObject(hPen);
-
-        // 槽位编号
-        wchar_t label[4];
-        swprintf(label, 4, L"%d", slot);
-        int pad = fontSize / 4;
-        RECT rcLabel = {ox + pad, oy + pad, ox + pad + fontSize + 10,
-                        oy + pad + fontSize + 8};
-        HBRUSH hBrLabel = CreateSolidBrush(RGB(30, 30, 30));
-        FillRect(hdcComp, &rcLabel, hBrLabel);
-        DeleteObject(hBrLabel);
-        SetTextColor(hdcComp, RGB(255, 255, 255));
-        TextOutW(hdcComp, ox + pad + 5, oy + pad + 2, label,
-                 (int)wcslen(label));
     }
 
     if (hasAny == 0) {
