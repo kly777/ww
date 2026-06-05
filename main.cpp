@@ -511,24 +511,28 @@ void SwitchSnapshot(int slot) {
 
     SaveSnapshot(g_trayNumber, g_windows);
 
-    // 截取当前屏幕（不含任务栏）存入快照，供 Alt+S 总览使用
+    // 截取全部显示器拼合画面（空缺填黑）存入快照，供 Alt+S 总览
     {
         Snapshot& snap = g_snapshots[g_trayNumber];
         if (snap.screenBmp) DeleteObject(snap.screenBmp);
-        RECT work;
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-        int capW = work.right - work.left;
-        int capH = work.bottom - work.top;
-        snap.screenW = capW / 2;   // 缩到 1/2 省内存
-        snap.screenH = capH / 2;
+        int vsX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int vsY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vsW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int vsH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        snap.screenW = vsW / 2;
+        snap.screenH = vsH / 2;
         HDC hdcScreen = GetDC(NULL);
         HDC hdcMem = CreateCompatibleDC(hdcScreen);
         snap.screenBmp =
             CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
         HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
+        // 先填黑（多显示器间的空隙）
+        RECT rcB = {0, 0, snap.screenW, snap.screenH};
+        FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        // 再画虚拟屏幕（覆盖所有显示器）
         SetStretchBltMode(hdcMem, HALFTONE);
         StretchBlt(hdcMem, 0, 0, snap.screenW, snap.screenH, hdcScreen,
-                   work.left, work.top, capW, capH, SRCCOPY);
+                   vsX, vsY, vsW, vsH, SRCCOPY);
         SelectObject(hdcMem, hOld);
         DeleteDC(hdcMem);
         ReleaseDC(NULL, hdcScreen);
@@ -806,10 +810,8 @@ static void CaptureAndShow() {
 
     POINT pt;
     GetCursorPos(&pt);
-    RECT work;
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    int sw = work.right - work.left;
-    int sh = work.bottom - work.top;
+    int sw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int sh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
     constexpr int kCols = 3, kRows = 3;
     int cellW = sw / kCols;
