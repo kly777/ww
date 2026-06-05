@@ -544,20 +544,16 @@ static BOOL CALLBACK CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
     return TRUE;
 }
 
-// 再次按同一数字 → 回到上一个快照，实现 Ctrl+N 双击在最近两个工作区间切换
-void SwitchSnapshot(int slot) {
+// 直接切换到指定快照（不含双击回退逻辑）
+void SwitchToSnapshot(int slot) {
     if (slot < 0 || slot > 9) return;
+    if (slot == g_trayNumber) return;  // 已在目标，无需切换
 
     g_windows.clear();
     g_zOrderCounter = 0;
     EnumWindows(EnumWindowCallback, 0);
 
     SyncDesktopState();
-
-    if (slot == g_trayNumber) {
-        slot = g_prevTrayNumber;
-        if (slot == g_trayNumber) return;
-    }
 
     SaveSnapshot(g_trayNumber, g_windows);
 
@@ -857,7 +853,7 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
             int row = my * 3 / (rc.bottom - rc.top);
             if (col >= 0 && col < 3 && row >= 0 && row < 3) {
                 int slot = row * 3 + col + 1;
-                SwitchSnapshot(slot);
+                SwitchToSnapshot(slot);
             }
             DestroyWindow(hwnd);
             return 0;
@@ -1073,12 +1069,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             int slot = id - static_cast<int>(HotkeyId::Digit);
             if (slot >= 0 && slot <= 9) {
-                SwitchSnapshot(slot);
+                // 双击同一数字 → 回到上一个快照
+                if (slot == g_trayNumber) {
+                    int prev = g_prevTrayNumber;
+                    if (prev != g_trayNumber) SwitchToSnapshot(prev);
+                } else {
+                    SwitchToSnapshot(slot);
+                }
             } else {
                 int dir = id - static_cast<int>(HotkeyId::ArrowUp);
                 if (dir >= 0 && dir <= 3) {
                     int target = kNavMap[g_trayNumber][dir];
-                    if (target != g_trayNumber) SwitchSnapshot(target);
+                    if (target != g_trayNumber) SwitchToSnapshot(target);
                 }
             }
             return 0;
