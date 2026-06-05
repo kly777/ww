@@ -820,19 +820,28 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
             if (g_overviewBmp) {
                 RECT rc;
                 GetClientRect(hwnd, &rc);
+                int border = 6;
+                // 先填深色背景，消除白边
+                RECT rcFill = {0, 0, rc.right, rc.bottom};
+                HBRUSH hBrBg = CreateSolidBrush(RGB(40, 40, 40));
+                FillRect(hdc, &rcFill, hBrBg);
+                DeleteObject(hBrBg);
+                // 截图内缩 border px
                 HDC memDC = CreateCompatibleDC(hdc);
                 HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, g_overviewBmp);
                 SetStretchBltMode(hdc, COLORONCOLOR);
-                StretchBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0,
-                           g_overviewW, g_overviewH, SRCCOPY);
+                StretchBlt(hdc, border, border,
+                           rc.right - border * 2, rc.bottom - border * 2,
+                           memDC, 0, 0, g_overviewW, g_overviewH, SRCCOPY);
                 SelectObject(memDC, oldBmp);
                 DeleteDC(memDC);
-                // 6px 直角外边框
-                HPEN hPen = CreatePen(PS_SOLID, 6, RGB(40, 40, 40));
+                // 6px 外边框（笔宽中心在截图边缘，不侵入内容）
+                int hb = border / 2;
+                HPEN hPen = CreatePen(PS_SOLID, border, RGB(40, 40, 40));
                 HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
                 HBRUSH hOldBr =
                     (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-                Rectangle(hdc, 3, 3, rc.right - 3, rc.bottom - 3);
+                Rectangle(hdc, hb, hb, rc.right - hb, rc.bottom - hb);
                 SelectObject(hdc, hOldBr);
                 SelectObject(hdc, hOldPen);
                 DeleteObject(hPen);
