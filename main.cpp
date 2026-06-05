@@ -538,7 +538,7 @@ static BOOL CALLBACK CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp) {
     int dy = my * c->bmpH / uh;
     int dw = mw * c->bmpW / uw;
     int dh = mh * c->bmpH / uh;
-    SetStretchBltMode(c->hdcMem, HALFTONE);
+    SetStretchBltMode(c->hdcMem, COLORONCOLOR);
     StretchBlt(c->hdcMem, dx, dy, dw, dh, c->hdcScreen,
                mi.rcWork.left, mi.rcWork.top, mw, mh, SRCCOPY);
     return TRUE;
@@ -576,8 +576,8 @@ void SwitchSnapshot(int slot) {
             ReleaseDC(NULL, hdcScreen);
             goto skip_cap;
         }
-        snap.screenW = uw / 2;
-        snap.screenH = uh / 2;
+        snap.screenW = uw / 4;
+        snap.screenH = uh / 4;
         HDC hdcMem = CreateCompatibleDC(hdcScreen);
         snap.screenBmp =
             CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
@@ -826,7 +826,7 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                 GetClientRect(hwnd, &rc);
                 HDC memDC = CreateCompatibleDC(hdc);
                 HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, g_overviewBmp);
-                SetStretchBltMode(hdc, HALFTONE);
+                SetStretchBltMode(hdc, COLORONCOLOR);
                 StretchBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0,
                            g_overviewW, g_overviewH, SRCCOPY);
                 SelectObject(memDC, oldBmp);
@@ -910,7 +910,7 @@ static void CaptureAndShow() {
             // 有截图：直接绘制
             HDC hdcSrc = CreateCompatibleDC(hdcScreen);
             HBITMAP hOldSrc = (HBITMAP)SelectObject(hdcSrc, snap.screenBmp);
-            SetStretchBltMode(hdcComp, HALFTONE);
+            SetStretchBltMode(hdcComp, COLORONCOLOR);
             StretchBlt(hdcComp, ox, oy, cellW, cellH, hdcSrc, 0, 0,
                        snap.screenW, snap.screenH, SRCCOPY);
             SelectObject(hdcSrc, hOldSrc);
@@ -965,7 +965,7 @@ static void CaptureAndShow() {
     ReleaseDC(NULL, hdcScreen);
 
     // ---- 预览窗口 ----
-    constexpr int kMaxPreviewW = 650;
+    constexpr int kMaxPreviewW = 1650;
     int previewW = totalW, previewH = totalH;
     if (previewW > kMaxPreviewW) {
         previewH = previewH * kMaxPreviewW / previewW;
