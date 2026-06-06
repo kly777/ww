@@ -348,7 +348,7 @@ RestoreSnapshot(int num)
     for (size_t i = 0; i < wins.size(); i++) {
         const auto& w = wins[i];
         if (!IsWindow(w.hwnd)) {
-            LOG("[恢复] [%zu] 窗口已销毁，跳过", i);
+            LOG("[恢复] [%zu] 窗口已销毁，跳过\n", i);
             continue;
         }
         RECT r = w.rect;
@@ -359,7 +359,7 @@ RestoreSnapshot(int num)
         BOOL iconic = IsIconic(w.hwnd);
         const char* showCmdStr = ShowCmdStr(w.showCmd);
         LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
-            "%ldx%ld",
+            "%ldx%ld\n",
             i,
             w.title.c_str(),
             iconic,
@@ -374,7 +374,7 @@ RestoreSnapshot(int num)
         WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
         wp.rcNormalPosition = r;
         if (w.showCmd != SW_MINIMIZE && iconic) {
-            LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s",
+            LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s\n",
                 i,
                 showCmdStr);
             wp.showCmd = SW_SHOWNOACTIVATE;
@@ -383,7 +383,7 @@ RestoreSnapshot(int num)
             SetWindowPlacement(w.hwnd, &wp);
         } else if (w.showCmd == SW_MAXIMIZE && !iconic) {
             // 已在另一显示器最大化；先还原到目标位置再最大化，实现跨屏移动
-            LOG("[恢复] [%zu] 跨屏最大化: SW_SHOWNOACTIVATE -> SW_MAXIMIZE", i);
+            LOG("[恢复] [%zu] 跨屏最大化: SW_SHOWNOACTIVATE -> SW_MAXIMIZE\n", i);
             wp.showCmd = SW_SHOWNOACTIVATE;
             SetWindowPlacement(w.hwnd, &wp);
             wp.showCmd = SW_MAXIMIZE;
