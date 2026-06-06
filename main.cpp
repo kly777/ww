@@ -459,7 +459,7 @@ RestoreSnapshot(int num)
             if (hdwp)
                 EndDeferWindowPos(hdwp);
         }
-        SetForegroundWindow(hwndTop);
+        // SetForegroundWindow(hwndTop);
     }
 
     // 恢复动画设置
