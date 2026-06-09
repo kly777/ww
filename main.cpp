@@ -155,7 +155,7 @@ VirtualDesktopManagerCleanup()
 
 // ---- 捕捉窗口状态 ----
 void
-FillWindowInfo(WinInfo& w, HWND hwnd)
+WindowFillInfo(WinInfo& w, HWND hwnd)
 {
     w.hwnd = hwnd;
     w.zOrder = g_zOrderCounter++;
@@ -224,7 +224,7 @@ EnumWindowCallback(HWND hwnd, LPARAM lParam)
     if (g_windows.size() >= kMaxWindows)
         return TRUE;
     WinInfo wi;
-    FillWindowInfo(wi, hwnd);
+    WindowFillInfo(wi, hwnd);
     g_windows.push_back(wi);
     return TRUE;
 }
@@ -701,7 +701,7 @@ SnapCapture(int slot)
 
 // 直接切换到指定快照
 void
-Snap_Switch(int slot)
+SnapSwitch(int slot)
 {
     if (slot < 0 || slot > 9)
         return;
@@ -1041,7 +1041,7 @@ PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int row = my * 3 / (rc.bottom - rc.top);
         if (col >= 0 && col < 3 && row >= 0 && row < 3) {
             int slot = row * 3 + col + 1;
-            Snap_Switch(slot);
+            SnapSwitch(slot);
         }
         DestroyWindow(hwnd);
         return 0;
@@ -1307,16 +1307,16 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if (slot == g_trayNumber) {
                 int prev = g_prevTrayNumber;
                 if (prev != g_trayNumber)
-                    Snap_Switch(prev);
+                    SnapSwitch(prev);
             } else {
-                Snap_Switch(slot);
+                SnapSwitch(slot);
             }
         } else {
             int dir = id - static_cast<int>(HotkeyId::ArrowUp);
             if (dir >= 0 && dir <= 3) {
                 int target = kNavMap[g_trayNumber][dir];
                 if (target != g_trayNumber)
-                    Snap_Switch(target);
+                    SnapSwitch(target);
             }
         }
         return 0;
