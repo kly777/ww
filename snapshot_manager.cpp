@@ -381,24 +381,21 @@ SnapshotManager::Restore(int num)
         WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
         wp.rcNormalPosition = r;
         if (w.showCmd != SW_MINIMIZE && iconic) {
-            // 两步还原：第一步只需现身 → ShowWindowAsync 非阻塞
-            // 第二步需要设位置 → SetWindowPlacement 同步
             LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s\n",
                 i,
                 showCmdStr);
-            ShowWindowAsync(w.hwnd, SW_SHOWNOACTIVATE);
+            wp.showCmd = SW_SHOWNOACTIVATE;
+            SetWindowPlacement(w.hwnd, &wp);
             wp.showCmd = w.showCmd;
             SetWindowPlacement(w.hwnd, &wp);
         } else if (w.showCmd == SW_MAXIMIZE && !iconic) {
             // 已在另一显示器最大化；先还原到目标位置再最大化，实现跨屏移动
             LOG("[恢复] [%zu] 跨屏最大化: SW_SHOWNOACTIVATE -> SW_MAXIMIZE\n",
                 i);
-            ShowWindowAsync(w.hwnd, SW_SHOWNOACTIVATE);
+            wp.showCmd = SW_SHOWNOACTIVATE;
+            SetWindowPlacement(w.hwnd, &wp);
             wp.showCmd = SW_MAXIMIZE;
             SetWindowPlacement(w.hwnd, &wp);
-        } else if (w.showCmd == SW_MINIMIZE) {
-            // 只需最小化，不关心位置 → ShowWindowAsync 非阻塞
-            ShowWindowAsync(w.hwnd, SW_MINIMIZE);
         } else {
             wp.showCmd = w.showCmd;
             SetWindowPlacement(w.hwnd, &wp);
