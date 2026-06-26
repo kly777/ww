@@ -10,14 +10,11 @@
 #include <shobjidl.h>
 #include <stdio.h>
 #include <windows.h>
+#include <cstdio>
 
-#include <algorithm>
-#include <array>
-#include <map>
-#include <string>
-#include <vector>
 
-constexpr int kMaxWindows = 256;
+#include "snapshot_manager.h"
+
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 // WM_INIT_TRAY: 延迟初始化托盘 必须在 GetMessage 循环跑起来之后才能
 // NIM_ADD，而 WM_CREATE 在 CreateWindow 返回前就处理完了，所以用 PostMessage
@@ -54,83 +51,21 @@ static const int kNavMap[10][4] = {
     { 6, 3, 8, 7 }, // 9
 };
 
-#ifdef RELEASE
-#define LOG(fmt, ...) ((void)0)
-#else
-#define LOG(fmt, ...)                                                          \
-    do {                                                                       \
-        printf(fmt, ##__VA_ARGS__);                                            \
-        if (g_logFile) {                                                       \
-            fprintf(g_logFile, fmt, ##__VA_ARGS__);                            \
-            fflush(g_logFile);                                                 \
-        }                                                                      \
-        fflush(stdout);                                                        \
-    } while (0)
-#endif
-
-struct WinInfo {
-    HWND hwnd;
-    std::string title; // 仅用于日志
-    RECT rect;
-    UINT showCmd; // SW_SHOWNORMAL / SW_MINIMIZE / SW_MAXIMIZE
-    UINT zOrder;
-};
-
-struct Snapshot {
-    std::vector<WinInfo> windows;
-    HBITMAP screenBmp = NULL;
-    int screenW = 0, screenH = 0;
-    RECT capUnion = { 0, 0, 0, 0 }; // 截屏时的 rcWork 并集（用于坐标映射）
-};
-
 // ---- 全局 ----
-static std::vector<WinInfo> g_windows;
-static UINT g_zOrderCounter = 0;
+static SnapshotManager* g_snapMgr = nullptr;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
-static int g_trayNumber = 1; // 托盘显示的数字 0-9
-static int g_prevTrayNumber = 0;
-
-static std::array<Snapshot, 10> g_snapshots; // 当前桌面的快照
-
-// 每个虚拟桌面独立维护 10 槽快照 + 托盘状态
-struct GuidLess {
-    bool operator()(const GUID& a, const GUID& b) const
-    {
-        return memcmp(&a, &b, sizeof(GUID)) < 0;
-    }
-};
-struct DesktopState {
-    std::array<Snapshot, 10> snapshots;
-    int trayNumber = 0;
-    int prevTrayNumber = 0;
-};
-static std::map<GUID, DesktopState, GuidLess> g_desktopStates;
-static GUID g_currentDesktopId = GUID_NULL;
 
 static HWND g_hWnd = NULL;
-static FILE* g_logFile = NULL; // 文件日志句柄，仅 #ifndef RELEASE 有效
 
 // ---- 工作区总览预览 ----
 static HWND g_previewWnd = NULL;
 static UINT g_previewTimer = 0;
 
-// ---- 工具函数 ----
-std::string
-WideToUtf8(const wchar_t* src)
-{
-    int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, NULL, 0, NULL, NULL);
-    if (len <= 0)
-        return {};
-    std::string result(len - 1, '\0'); // len 含 null terminator
-    WideCharToMultiByte(CP_UTF8, 0, src, -1, &result[0], len, NULL, NULL);
-    return result;
-}
-
 // IVirtualDesktopManager 要求 STA 线程模型，所以用
 // COINIT_APARTMENTTHREADED MTA 下 CoCreateInstance 会返回
 // CO_E_NOTINITIALIZED
 BOOL
-InitVirtualDesktopManager()
+VirtualDesktopManagerInit()
 {
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr))
@@ -144,7 +79,7 @@ InitVirtualDesktopManager()
 }
 
 void
-CleanupVirtualDesktopManager()
+VirtualDesktopManagerCleanup()
 {
     if (g_pDesktopManager) {
         g_pDesktopManager->Release();
@@ -153,575 +88,9 @@ CleanupVirtualDesktopManager()
     CoUninitialize();
 }
 
-// ---- 捕捉窗口状态 ----
-void
-FillWindowInfo(WinInfo& w, HWND hwnd)
-{
-    w.hwnd = hwnd;
-    w.zOrder = g_zOrderCounter++;
-
-    wchar_t wt[256];
-    GetWindowTextW(hwnd, wt, 256);
-    w.title = WideToUtf8(wt);
-
-    BOOL iconic = IsIconic(hwnd);
-    BOOL zoomed = IsZoomed(hwnd);
-    if (iconic)
-        w.showCmd = SW_MINIMIZE;
-    else if (zoomed)
-        w.showCmd = SW_MAXIMIZE;
-    else
-        w.showCmd = SW_SHOWNORMAL;
-
-    // 用 GetWindowPlacement 获取正常位置，而非 GetWindowRect
-    // 最小化窗口的 GetWindowRect 返回 (-32000,-32000)——这是系统将窗口
-    // "移出屏幕"的内部实现 GetWindowPlacement 的 rcNormalPosition 始终
-    // 返回缩小前的正常位置
-    WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
-    GetWindowPlacement(hwnd, &wp);
-    w.rect = wp.rcNormalPosition;
-    LOG("[枚举] \"%s\" iconic=%d zoomed=%d rect=(%ld,%ld,%ld,%ld) %ldx%ld\n",
-        w.title.c_str(),
-        iconic,
-        zoomed,
-        w.rect.left,
-        w.rect.top,
-        w.rect.right,
-        w.rect.bottom,
-        w.rect.right - w.rect.left,
-        w.rect.bottom - w.rect.top);
-}
-
-// ---- 窗口过滤 ----
-BOOL
-ShouldSkipWindow(HWND hwnd)
-{
-    if (!IsWindowVisible(hwnd))
-        return TRUE;
-    wchar_t title[256], wclass[256];
-    GetWindowTextW(hwnd, title, 256);
-    if (wcslen(title) == 0)
-        return TRUE;
-    GetClassNameW(hwnd, wclass, 256);
-    // 跳过桌面窗口本身 (Progman)
-    if (_wcsicmp(wclass, L"Progman") == 0)
-        return TRUE;
-    // 如果存在其他虚拟桌面，只枚举当前桌面的窗口
-    if (g_pDesktopManager) {
-        GUID desktopId;
-        if (FAILED(g_pDesktopManager->GetWindowDesktopId(hwnd, &desktopId))
-            || IsEqualGUID(desktopId, GUID_NULL))
-            return TRUE;
-    }
-    return FALSE;
-}
-
-BOOL CALLBACK
-EnumWindowCallback(HWND hwnd, LPARAM lParam)
-{
-    if (ShouldSkipWindow(hwnd))
-        return TRUE;
-    if (g_windows.size() >= kMaxWindows)
-        return TRUE;
-    WinInfo wi;
-    FillWindowInfo(wi, hwnd);
-    g_windows.push_back(wi);
-    return TRUE;
-}
-
-void
-SaveSnapshot(int num, const std::vector<WinInfo>& windows)
-{
-    if (num < 0 || num > 9)
-        return;
-    Snapshot& snap = g_snapshots[num];
-    snap.windows = windows;
-    LOG("[快照] 保存 %d 个窗口到数字 %d\n", (int)snap.windows.size(), num);
-    for (size_t i = 0; i < windows.size(); i++) {
-        const auto& w = windows[i];
-        LOG("[保存] [%zu] \"%s\" showCmd=%u rect=(%ld,%ld,%ld,%ld) %ldx%ld\n",
-            i,
-            w.title.c_str(),
-            w.showCmd,
-            w.rect.left,
-            w.rect.top,
-            w.rect.right,
-            w.rect.bottom,
-            w.rect.right - w.rect.left,
-            w.rect.bottom - w.rect.top);
-    }
-}
-
-// ---- 显示器可见性检查 ----
-// 多显→单显切换时，保存的窗口位置可能完全脱离当前显示器（比如副屏
-// 上的窗口坐标 x>1920，副屏拔掉后该坐标对应区域不存在任何显示器）
-BOOL
-IsRectOnScreen(const RECT& rect)
-{
-    // MONITOR_DEFAULTTONULL: 矩形完全脱离所有显示器时返回 NULL
-    return MonitorFromRect(&rect, MONITOR_DEFAULTTONULL) != NULL;
-}
-
-void
-EnsureRectVisible(RECT& rect, int width, int height)
-{
-    if (IsRectOnScreen(rect))
-        return;
-    // 窗口完全脱离所有显示器，移到主显示器居中 用 rcWork 而非 rcMonitor
-    // 避开任务栏区域
-    HMONITOR hPrimary = MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
-    MONITORINFO mi = { sizeof(MONITORINFO) };
-    GetMonitorInfo(hPrimary, &mi);
-    const RECT& work = mi.rcWork;
-    rect.left = work.left + ((work.right - work.left) - width) / 2;
-    rect.top = work.top + ((work.bottom - work.top) - height) / 2;
-    rect.right = rect.left + width;
-    rect.bottom = rect.top + height;
-    LOG("[修复] 窗口移到主显示器 (%ld,%ld,%ld,%ld)\n",
-        rect.left,
-        rect.top,
-        rect.right,
-        rect.bottom);
-}
-
-// ---- 恢复快照 ----
-static const char*
-ShowCmdStr(UINT cmd);
-void
-RestoreSnapshot(int num)
-{
-    if (num < 0 || num > 9)
-        return;
-    Snapshot& snap = g_snapshots[num];
-
-    // 临时禁用窗口最小化/还原动画，让批量恢复像瞬间切换而非逐个动画
-    ANIMATIONINFO ai = { sizeof(ANIMATIONINFO) };
-    BOOL origAnimate = FALSE;
-    if (SystemParametersInfo(SPI_GETANIMATION, sizeof(ai), &ai, 0))
-        origAnimate = ai.iMinAnimate;
-    if (origAnimate) {
-        ai.iMinAnimate = 0;
-        SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
-    }
-
-    auto& wins = snap.windows;
-
-    // 将当前可见窗口中"不在目标快照里"的全部最小化
-    for (const auto& w : g_windows) {
-        auto it = std::find_if(
-                wins.begin(), wins.end(), [&](const WinInfo& sw) {
-                    return sw.hwnd == w.hwnd;
-                });
-        if (it == wins.end()) {
-            ShowWindow(w.hwnd, SW_MINIMIZE);
-        }
-    }
-
-#ifndef RELEASE
-    LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
-    // 打印快照原始数据，便于诊断"恢复与保存不一致"问题
-    for (size_t i = 0; i < wins.size(); i++) {
-        const auto& w = wins[i];
-        LOG("[快照数据] [%zu] \"%s\" showCmd=%u rect=(%ld,%ld,%ld,%ld) "
-            "zOrder=%u\n",
-            i,
-            w.title.c_str(),
-            w.showCmd,
-            w.rect.left,
-            w.rect.top,
-            w.rect.right,
-            w.rect.bottom,
-            w.zOrder);
-    }
-#endif
-
-    // Version 2: 使用 SetWindowPlacement 直接设置位置和显示状态
-    // 第一步：恢复窗口状态（位置 + 最小化/最大化/还原）
-    //
-    // 将位置和 Z 序分成两步的原因：SetWindowPlacement 能原子地设置位置
-    // 和显示状态但不控制 Z 序；DeferWindowPos 能批量调 Z 序但不支持
-    // 显示状态变更（SW_MINIMIZE / SW_MAXIMIZE）
-    //
-    // 最小化→最大化跨进程窗口时，直接 SetWindowPlacement(SW_MAXIMIZE)
-    // 可能渲染异常（只显示还原尺寸的左上角，其余透明），所以拆成两步
-    // 先 SW_SHOWNOACTIVATE 还原，再 SW_SHOWMAXIMIZED 最大化
-    for (size_t i = 0; i < wins.size(); i++) {
-        const auto& w = wins[i];
-        if (!IsWindow(w.hwnd)) {
-            LOG("[恢复] [%zu] 窗口已销毁，跳过\n", i);
-            continue;
-        }
-        RECT r = w.rect;
-        long ww = r.right - r.left;
-        long wh = r.bottom - r.top;
-        EnsureRectVisible(r, ww, wh);
-
-        BOOL iconic = IsIconic(w.hwnd);
-        const char* showCmdStr = ShowCmdStr(w.showCmd);
-        LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
-            "%ldx%ld\n",
-            i,
-            w.title.c_str(),
-            iconic,
-            showCmdStr,
-            r.left,
-            r.top,
-            r.right,
-            r.bottom,
-            ww,
-            wh);
-
-        WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
-        wp.rcNormalPosition = r;
-        if (w.showCmd != SW_MINIMIZE && iconic) {
-            LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s\n",
-                i,
-                showCmdStr);
-            wp.showCmd = SW_SHOWNOACTIVATE;
-            SetWindowPlacement(w.hwnd, &wp);
-            wp.showCmd = w.showCmd;
-            SetWindowPlacement(w.hwnd, &wp);
-        } else if (w.showCmd == SW_MAXIMIZE && !iconic) {
-            // 已在另一显示器最大化；先还原到目标位置再最大化，实现跨屏移动
-            LOG("[恢复] [%zu] 跨屏最大化: SW_SHOWNOACTIVATE -> SW_MAXIMIZE\n", i);
-            wp.showCmd = SW_SHOWNOACTIVATE;
-            SetWindowPlacement(w.hwnd, &wp);
-            wp.showCmd = SW_MAXIMIZE;
-            SetWindowPlacement(w.hwnd, &wp);
-        } else {
-            wp.showCmd = w.showCmd;
-            SetWindowPlacement(w.hwnd, &wp);
-        }
-    }
-
-    // Version 1: 使用 ShowWindow 的 SW_RESTORE 先还原，再应用目标状态
-    // for (const auto& w : wins) {
-    //     if (!IsWindow(w.hwnd)) continue;
-    //     WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
-    //     wp.showCmd = w.showCmd;
-    //     wp.rcNormalPosition = w.rect;
-    //     // ptMinPosition / ptMaxPosition 置零，由系统自己计算
-    //     SetWindowPlacement(w.hwnd, &wp);
-    // }
-    // 使用 ShowWindow 的 SW_RESTORE 先还原，再应用目标状态
-
-    // Version 3: 使用 ShowWindow 的 SW_RESTORE 先还原，再应用目标状态
-    // for (const auto& w : wins) {
-    //     if (!IsWindow(w.hwnd)) continue;
-
-    //     // 如果窗口当前是最小化，先还原
-    //     if (IsIconic(w.hwnd) && w.showCmd != SW_MINIMIZE) {
-    //         ShowWindow(w.hwnd, SW_RESTORE);
-    //     }
-
-    //     // 然后设置目标状态
-    //     if (w.showCmd == SW_MAXIMIZE) {
-    //         ShowWindow(w.hwnd, SW_MAXIMIZE);
-    //     } else if (w.showCmd == SW_MINIMIZE) {
-    //         ShowWindow(w.hwnd, SW_MINIMIZE);
-    //     } else {
-    //         // 正常状态：可能需要调整位置
-    //         WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
-    //         wp.showCmd = SW_SHOWNORMAL;
-    //         wp.rcNormalPosition = w.rect;
-    //         SetWindowPlacement(w.hwnd, &wp);
-    //     }
-    // }
-
-    // 第二步：按 zOrder 恢复 Z 序
-    // 排序后从 HWND_BOTTOM 开始逐个往上叠，恢复原始前后关系
-    // 注意：必须在副本上排序，不能直接修改 snap.windows，
-    // 否则会永久破坏已保存快照的窗口顺序
-    std::vector<WinInfo> sortedWins = wins;
-    std::sort(sortedWins.begin(),
-              sortedWins.end(),
-              [](const WinInfo& a, const WinInfo& b) {
-                  return a.zOrder < b.zOrder;
-              });
-
-    if (!sortedWins.empty()) {
-        HWND hwndTop = sortedWins[0].hwnd;
-        HDWP hdwp = BeginDeferWindowPos((int)sortedWins.size());
-        if (hdwp) {
-            HWND after = HWND_BOTTOM;
-            for (const auto& w : sortedWins) {
-                if (!IsWindow(w.hwnd))
-                    continue;
-                // SWP_NOMOVE | SWP_NOSIZE: 位置和大小已由 SetWindowPlacement
-                // 设置好了，这里只修 Z 序
-                // SWP_NOACTIVATE: 不改变当前活动窗口，避免抢焦点
-                UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
-                hdwp = DeferWindowPos(hdwp, w.hwnd, after, 0, 0, 0, 0, flags);
-                if (!hdwp)
-                    break;
-                after = w.hwnd;
-            }
-            if (hdwp)
-                EndDeferWindowPos(hdwp);
-        }
-        // SetForegroundWindow(hwndTop);
-    }
-
-    // 恢复动画设置
-    if (origAnimate) {
-        ai.iMinAnimate = origAnimate;
-        SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
-    }
-
-    // ---- 恢复后验证：对比实际窗口状态与快照数据 ----
-#ifndef RELEASE
-    LOG("[验证] 开始对比恢复结果与快照数据...\n");
-    for (size_t i = 0; i < wins.size(); i++) {
-        const auto& w = wins[i];
-        if (!IsWindow(w.hwnd)) {
-            LOG("[验证] [%zu] \"%s\" 窗口已销毁，跳过\n", i, w.title.c_str());
-            continue;
-        }
-        BOOL iconic = IsIconic(w.hwnd);
-        BOOL zoomed = IsZoomed(w.hwnd);
-        UINT actualShowCmd;
-        if (iconic)
-            actualShowCmd = SW_MINIMIZE;
-        else if (zoomed)
-            actualShowCmd = SW_MAXIMIZE;
-        else
-            actualShowCmd = SW_SHOWNORMAL;
-
-        WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
-        GetWindowPlacement(w.hwnd, &wp);
-        RECT actualRect = wp.rcNormalPosition;
-
-        const char* expectedStr = ShowCmdStr(w.showCmd);
-        const char* actualStr = ShowCmdStr(actualShowCmd);
-
-        bool showCmdMatch = (w.showCmd == actualShowCmd);
-        bool rectMatch = (w.rect.left == actualRect.left
-                          && w.rect.top == actualRect.top
-                          && w.rect.right == actualRect.right
-                          && w.rect.bottom == actualRect.bottom);
-
-        if (!showCmdMatch) {
-            LOG("[验证] [!] [%zu] \"%s\" 状态不一致! 期望=%s(%u) 实际=%s(%u)\n",
-                i,
-                w.title.c_str(),
-                expectedStr,
-                w.showCmd,
-                actualStr,
-                actualShowCmd);
-        }
-        if (!rectMatch) {
-            LOG("[验证] [!] [%zu] \"%s\" 位置不一致! 期望=(%ld,%ld,%ld,%ld) "
-                "实际=(%ld,%ld,%ld,%ld)\n",
-                i,
-                w.title.c_str(),
-                w.rect.left,
-                w.rect.top,
-                w.rect.right,
-                w.rect.bottom,
-                actualRect.left,
-                actualRect.top,
-                actualRect.right,
-                actualRect.bottom);
-        }
-        if (showCmdMatch && rectMatch) {
-            LOG("[验证] [%zu] \"%s\" OK\n", i, w.title.c_str());
-        }
-    }
-    LOG("[验证] 完成\n");
-#endif
-
-    LOG("[恢复] 完成\n");
-}
-
-// ---- 切换工作区 ----
-void
-UpdateTrayIcon();
-// 通过已枚举窗口探测桌面 GUID 并同步桌面状态
-// EnumWindows 回调中 ShouldSkipWindow 已用 GetWindowDesktopId 过滤，
-// 故 g_windows 中每个窗口都有合法桌面 GUID，比 GetForegroundWindow 可靠
-static void
-SyncDesktopState()
-{
-    GUID newId = GUID_NULL;
-    if (g_pDesktopManager && !g_windows.empty())
-        g_pDesktopManager->GetWindowDesktopId(g_windows[0].hwnd, &newId);
-
-    // 无法确定桌面 GUID（g_windows 为空或虚拟桌面管理器不可用）
-    if (IsEqualGUID(newId, GUID_NULL))
-        return;
-
-    // 首次运行
-    if (IsEqualGUID(g_currentDesktopId, GUID_NULL)) {
-        g_currentDesktopId = newId;
-        return;
-    }
-    if (IsEqualGUID(g_currentDesktopId, newId))
-        return;
-
-    // 保存当前桌面状态
-    DesktopState& oldState = g_desktopStates[g_currentDesktopId];
-    oldState.snapshots = g_snapshots;
-    oldState.trayNumber = g_trayNumber;
-    oldState.prevTrayNumber = g_prevTrayNumber;
-
-    LOG("[桌面] 离开桌面 (tray=%d)\n", g_trayNumber);
-
-    // 加载新桌面状态
-    auto it = g_desktopStates.find(newId);
-    if (it != g_desktopStates.end()) {
-        g_snapshots = it->second.snapshots;
-        g_trayNumber = it->second.trayNumber;
-        g_prevTrayNumber = it->second.prevTrayNumber;
-        LOG("[桌面] 进入已知桌面 (tray=%d)\n", g_trayNumber);
-    } else {
-        g_snapshots = {};
-        g_trayNumber = 0;
-        g_prevTrayNumber = 0;
-        LOG("[桌面] 进入新桌面\n");
-    }
-    g_currentDesktopId = newId;
-    UpdateTrayIcon();
-}
-
-// EnumDisplayMonitors 回调上下文
-struct CapCtx {
-    HDC hdcMem;
-    HDC hdcScreen;
-    int bmpW, bmpH;
-    RECT workUnion; // 所有 rcWork 的并集
-};
-
-static BOOL CALLBACK CapMonitorProc(HMONITOR, HDC, LPRECT, LPARAM);
-static BOOL CALLBACK CapDrawProc(HMONITOR, HDC, LPRECT, LPARAM);
-
-// ---- 工作区并集 ----
-static RECT
-GetWorkAreaUnion()
-{
-    CapCtx ctx = { NULL, NULL };
-    ctx.workUnion = { 0, 0, 0, 0 };
-    EnumDisplayMonitors(NULL, NULL, CapMonitorProc, (LPARAM)&ctx);
-    return ctx.workUnion;
-}
-
-// ---- showCmd → 字符串 ----
-static const char*
-ShowCmdStr(UINT cmd)
-{
-    return cmd == SW_MAXIMIZE   ? "最大化"
-           : cmd == SW_MINIMIZE ? "最小化"
-                                : "正常";
-}
-
-static BOOL CALLBACK
-CapMonitorProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp)
-{
-    CapCtx* c = (CapCtx*)lp;
-    MONITORINFO mi = { sizeof(mi) };
-    if (!GetMonitorInfoW(hMon, &mi))
-        return TRUE;
-    // 累计 rcWork 并集
-    if (c->workUnion.left == c->workUnion.right) {
-        c->workUnion = mi.rcWork;
-    } else {
-        if (mi.rcWork.left < c->workUnion.left)
-            c->workUnion.left = mi.rcWork.left;
-        if (mi.rcWork.top < c->workUnion.top)
-            c->workUnion.top = mi.rcWork.top;
-        if (mi.rcWork.right > c->workUnion.right)
-            c->workUnion.right = mi.rcWork.right;
-        if (mi.rcWork.bottom > c->workUnion.bottom)
-            c->workUnion.bottom = mi.rcWork.bottom;
-    }
-    return TRUE;
-}
-
-// 第二次遍历：实际绘制
-static BOOL CALLBACK
-CapDrawProc(HMONITOR hMon, HDC, LPRECT, LPARAM lp)
-{
-    CapCtx* c = (CapCtx*)lp;
-    MONITORINFO mi = { sizeof(mi) };
-    if (!GetMonitorInfoW(hMon, &mi))
-        return TRUE;
-    int mx = mi.rcWork.left - c->workUnion.left;
-    int my = mi.rcWork.top - c->workUnion.top;
-    int mw = mi.rcWork.right - mi.rcWork.left;
-    int mh = mi.rcWork.bottom - mi.rcWork.top;
-    int uw = c->workUnion.right - c->workUnion.left;
-    int uh = c->workUnion.bottom - c->workUnion.top;
-    int dx = mx * c->bmpW / uw;
-    int dy = my * c->bmpH / uh;
-    int dw = mw * c->bmpW / uw;
-    int dh = mh * c->bmpH / uh;
-    SetStretchBltMode(c->hdcMem, COLORONCOLOR);
-    StretchBlt(c->hdcMem,
-               dx,
-               dy,
-               dw,
-               dh,
-               c->hdcScreen,
-               mi.rcWork.left,
-               mi.rcWork.top,
-               mw,
-               mh,
-               SRCCOPY);
-    return TRUE;
-}
-
-// ---- 工作区截图 ----
-static void
-CaptureScreenShot(int slot)
-{
-    Snapshot& snap = g_snapshots[slot];
-    if (snap.screenBmp)
-        DeleteObject(snap.screenBmp);
-    RECT workUnion = GetWorkAreaUnion();
-    snap.capUnion = workUnion;
-    int uw = workUnion.right - workUnion.left;
-    int uh = workUnion.bottom - workUnion.top;
-    if (uw <= 0 || uh <= 0)
-        return;
-    snap.screenW = uw / 4;
-    snap.screenH = uh / 4;
-    HDC hdcScreen = GetDC(NULL);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    snap.screenBmp
-            = CreateCompatibleBitmap(hdcScreen, snap.screenW, snap.screenH);
-    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, snap.screenBmp);
-    RECT rcB = { 0, 0, snap.screenW, snap.screenH };
-    FillRect(hdcMem, &rcB, (HBRUSH)GetStockObject(BLACK_BRUSH));
-    CapCtx ctx = { hdcMem, hdcScreen, snap.screenW, snap.screenH, workUnion };
-    EnumDisplayMonitors(NULL, NULL, CapDrawProc, (LPARAM)&ctx);
-    SelectObject(hdcMem, hOld);
-    DeleteDC(hdcMem);
-    ReleaseDC(NULL, hdcScreen);
-}
-
-// 直接切换到指定快照（不含双击回退逻辑）
-void
-SwitchToSnapshot(int slot)
-{
-    if (slot < 0 || slot > 9)
-        return;
-    if (slot == g_trayNumber)
-        return;
-
-    g_windows.clear();
-    g_zOrderCounter = 0;
-    EnumWindows(EnumWindowCallback, 0);
-    SyncDesktopState();
-
-    SaveSnapshot(g_trayNumber, g_windows);
-    CaptureScreenShot(g_trayNumber);
-
-    g_prevTrayNumber = g_trayNumber;
-    g_trayNumber = slot;
-
-    RestoreSnapshot(slot);
-    UpdateTrayIcon();
-    LOG("[切换] %d -> %d\n", g_prevTrayNumber, slot);
-}
+// ---- 快照操作已迁移至 SnapshotManager (snapshot_manager.cpp) ----
+// (SnapRestore, CmdToStr, DesktopStateSync, CapCtx, CapMonitorProc,
+//  CapDrawProc, WorkAreaUnionGet, SnapCapture, SnapSwitch)
 
 // ---- 生成托盘图标 ----
 HICON
@@ -857,7 +226,7 @@ MakeTrayIcon(int number)
 static BOOL g_trayAdded = FALSE;
 // ---- 更新托盘图标 ----
 void
-UpdateTrayIcon()
+TrayIconUpdate(int number)
 {
     NOTIFYICONDATAW nid = {};
     nid.cbSize = NOTIFYICONDATAW_V2_SIZE;
@@ -866,8 +235,8 @@ UpdateTrayIcon()
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAYICON;
 
-    nid.hIcon = MakeTrayIcon(g_trayNumber);
-    swprintf(nid.szTip, 128, L"ww-%d", g_trayNumber);
+    nid.hIcon = MakeTrayIcon(number);
+    swprintf(nid.szTip, 128, L"ww-%d", number);
 
     if (!g_trayAdded) {
         Shell_NotifyIconW(NIM_ADD, &nid);
@@ -1040,7 +409,8 @@ PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int row = my * 3 / (rc.bottom - rc.top);
         if (col >= 0 && col < 3 && row >= 0 && row < 3) {
             int slot = row * 3 + col + 1;
-            SwitchToSnapshot(slot);
+            if (g_snapMgr)
+                g_snapMgr->SwitchTo(slot);
         }
         DestroyWindow(hwnd);
         return 0;
@@ -1072,14 +442,14 @@ PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 // ---- 工作区总览合成 ----
 static void
-BuildOverviewBitmap()
+OverviewBuild()
 {
     if (g_overviewBmp) {
         DeleteObject(g_overviewBmp);
         g_overviewBmp = NULL;
     }
 
-    RECT workUnion = GetWorkAreaUnion();
+    RECT workUnion = WorkAreaUnionGet();
     int sw = workUnion.right - workUnion.left;
     int sh = workUnion.bottom - workUnion.top;
     if (sw <= 0)
@@ -1122,7 +492,8 @@ BuildOverviewBitmap()
     for (int slot = 1; slot <= 9; slot++) {
         int col = (slot - 1) % kCols, row = (slot - 1) / kCols;
         int ox = col * cellW, oy = row * cellH;
-        Snapshot& snap = g_snapshots[slot];
+        const Snapshot& snap
+                = g_snapMgr ? g_snapMgr->GetSnapshot(slot) : Snapshot{};
 
         RECT rcCell = { ox, oy, ox + cellW, oy + cellH };
         if (snap.screenBmp) {
@@ -1190,7 +561,7 @@ BuildOverviewBitmap()
 
 // ---- 预览窗口 ----
 static void
-ShowOverviewWindow(POINT mousePt)
+OverviewShow(POINT mousePt)
 {
     constexpr int kMaxPreviewW = 1650, kCols = 3, kRows = 3;
     int previewW = g_overviewW, previewH = g_overviewH;
@@ -1199,8 +570,9 @@ ShowOverviewWindow(POINT mousePt)
         previewW = kMaxPreviewW;
     }
 
-    int curCol = (g_trayNumber - 1) % kCols;
-    int curRow = (g_trayNumber - 1) / kCols;
+    int trayNum = g_snapMgr ? g_snapMgr->CurrentSlot() : 1;
+    int curCol = (trayNum - 1) % kCols;
+    int curRow = (trayNum - 1) / kCols;
     int x = mousePt.x - (int)((curCol + 0.5) / kCols * previewW);
     int y = mousePt.y - (int)((curRow + 0.5) / kRows * previewH);
 
@@ -1250,14 +622,16 @@ ShowOverviewWindow(POINT mousePt)
 static void
 CaptureAndShow()
 {
+    if (!g_snapMgr)
+        return;
     // 先销毁旧窗口，再截取当前快照确保总览是最新状态
     if (g_previewWnd && IsWindow(g_previewWnd))
         DestroyWindow(g_previewWnd);
-    CaptureScreenShot(g_trayNumber);
-    BuildOverviewBitmap();
+    g_snapMgr->CaptureCurrent();
+    OverviewBuild();
     POINT pt;
     GetCursorPos(&pt);
-    ShowOverviewWindow(pt);
+    OverviewShow(pt);
 }
 
 LRESULT CALLBACK
@@ -1271,9 +645,8 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_INIT_TRAY: {
-        EnumWindows(EnumWindowCallback, 0);
-        LOG("共 %d 个窗口\n", (int)g_windows.size());
-        UpdateTrayIcon();
+        if (g_snapMgr)
+            g_snapMgr->Initialize();
         return 0;
     }
 
@@ -1284,17 +657,14 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         nid.hWnd = hwnd;
         nid.uID = kIdTrayIcon;
         Shell_NotifyIconW(NIM_DELETE, &nid);
-#ifndef RELEASE
-        if (g_logFile) {
-            fclose(g_logFile);
-            g_logFile = NULL;
-        }
-#endif
+        LogCleanup();
         PostQuitMessage(0);
         return 0;
     }
 
     case WM_HOTKEY: {
+        if (!g_snapMgr)
+            return 0;
         int id = (int)wParam;
         if (id == static_cast<int>(HotkeyId::Screenshot)) {
             CaptureAndShow();
@@ -1302,20 +672,21 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         int slot = id - static_cast<int>(HotkeyId::Digit);
         if (slot >= 0 && slot <= 9) {
-            // 双击同一数字 → 回到上一个快照
-            if (slot == g_trayNumber) {
-                int prev = g_prevTrayNumber;
-                if (prev != g_trayNumber)
-                    SwitchToSnapshot(prev);
+            int cur = g_snapMgr->CurrentSlot();
+            if (slot == cur) {
+                int prev = g_snapMgr->PrevSlot();
+                if (prev != cur)
+                    g_snapMgr->SwitchTo(prev);
             } else {
-                SwitchToSnapshot(slot);
+                g_snapMgr->SwitchTo(slot);
             }
         } else {
             int dir = id - static_cast<int>(HotkeyId::ArrowUp);
             if (dir >= 0 && dir <= 3) {
-                int target = kNavMap[g_trayNumber][dir];
-                if (target != g_trayNumber)
-                    SwitchToSnapshot(target);
+                int cur = g_snapMgr->CurrentSlot();
+                int target = kNavMap[cur][dir];
+                if (target != cur)
+                    g_snapMgr->SwitchTo(target);
             }
         }
         return 0;
@@ -1360,7 +731,7 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // 使用 WS_POPUP 而非 HWND_MESSAGE 父窗口，因为 Shell_NotifyIcon 需要
 // 一个能接收回调消息的真实窗口句柄 WS_POPUP 创建 0×0 的不可见窗口
 BOOL
-CreateMessageWindow(HINSTANCE hInstance)
+MessageWindowCreate(HINSTANCE hInstance)
 {
     const wchar_t* CLASS_NAME = L"WW_TrayWindow";
 
@@ -1388,6 +759,15 @@ CreateMessageWindow(HINSTANCE hInstance)
 int
 main()
 {
+    HINSTANCE hInst = GetModuleHandle(NULL);
+
+    SetProcessDPIAware();
+#ifndef RELEASE
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+    LogInit();
+
+
     // 单实例保护：命名互斥体跨进程可见，第二个实例检测到已存在直接退出
     HANDLE hMutex = CreateMutexW(NULL, FALSE, L"WW_SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -1395,41 +775,17 @@ main()
         return 0;
     }
 
-    SetProcessDPIAware();
-#ifndef RELEASE
-    SetConsoleOutputCP(CP_UTF8);
-#endif
-    HINSTANCE hInst = GetModuleHandle(NULL);
+    VirtualDesktopManagerInit();
 
-#ifndef RELEASE
-    // 初始化文件日志：输出到 exe 同目录下的 ww.log
-    // 使用共享读写模式打开，允许外部（如测试脚本）同时读取日志
-    wchar_t logPath[MAX_PATH];
-    GetModuleFileNameW(NULL, logPath, MAX_PATH);
-    wchar_t* lastSlash = wcsrchr(logPath, L'\\');
-    if (lastSlash) {
-        *(lastSlash + 1) = L'\0';
-        wcscat_s(logPath, MAX_PATH, L"ww.log");
-        HANDLE hFile = CreateFileW(logPath,
-                                   FILE_APPEND_DATA,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   NULL,
-                                   OPEN_ALWAYS,
-                                   FILE_ATTRIBUTE_NORMAL,
-                                   NULL);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            int fd = _open_osfhandle((intptr_t)hFile, 0);
-            if (fd != -1)
-                g_logFile = _fdopen(fd, "a");
-        }
-    }
-#endif
+    // 创建快照管理器 — 注入托盘更新回调和虚拟桌面管理器
+    g_snapMgr = new SnapshotManager([](int num) { TrayIconUpdate(num); },
+                                    g_pDesktopManager);
 
-    InitVirtualDesktopManager();
-
-    if (!CreateMessageWindow(hInst)) {
+    if (!MessageWindowCreate(hInst)) {
         LOG("创建消息窗口失败\n");
-        CleanupVirtualDesktopManager();
+        delete g_snapMgr;
+        g_snapMgr = nullptr;
+        VirtualDesktopManagerCleanup();
         return 1;
     }
 
@@ -1443,10 +799,9 @@ main()
         DispatchMessage(&msg);
     }
 
-    CleanupVirtualDesktopManager();
-#ifndef RELEASE
-    if (g_logFile)
-        fclose(g_logFile);
-#endif
+    delete g_snapMgr;
+    g_snapMgr = nullptr;
+    VirtualDesktopManagerCleanup();
+    LogCleanup();
     return 0;
 }
