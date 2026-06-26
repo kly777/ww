@@ -4,7 +4,7 @@ CXX      := g++
 WINDRES  := windres
 CXXFLAGS := -static -O3 -s -DRELEASE
 LIBS     := -lole32 -luuid -lshell32 -lgdi32 -lmsimg32
-SRC      := main.cpp
+SRC      := main.cpp snapshot_manager.cpp
 BUILDDIR := build
 RES      := version.rc
 
