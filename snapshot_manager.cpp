@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <unordered_set>
 #include <shobjidl.h> // IVirtualDesktopManager 完整定义
 
 // ---- 日志宏 (snapshot_manager 独立版本，不依赖 g_logFile) ----
@@ -59,18 +60,36 @@ SnapshotManager::SwitchTo(int slot)
     if (slot == m_trayNumber)
         return;
 
+    DWORD t0 = GetTickCount();
+
     EnumerateWindows();
+    DWORD t1 = GetTickCount();
+    LOG("[计时] 枚举窗口: %lu ms, 共 %zu 个\n", t1 - t0, m_windows.size());
+
     SyncDesktopState();
+    DWORD t2 = GetTickCount();
+    LOG("[计时] 桌面同步: %lu ms\n", t2 - t1);
 
     SaveCurrent();
+    DWORD t3 = GetTickCount();
+    LOG("[计时] 保存快照: %lu ms\n", t3 - t2);
+
     CaptureSlot(m_trayNumber);
+    DWORD t4 = GetTickCount();
+    LOG("[计时] 截图: %lu ms\n", t4 - t3);
 
     m_prevTrayNumber = m_trayNumber;
     m_trayNumber = slot;
 
     Restore(slot);
+    DWORD t5 = GetTickCount();
+    LOG("[计时] 恢复窗口: %lu ms\n", t5 - t4);
+
     m_onTrayUpdate(m_trayNumber);
-    LOG("[切换] %d -> %d\n", m_prevTrayNumber, slot);
+    DWORD t6 = GetTickCount();
+    LOG("[计时] 托盘图标: %lu ms\n", t6 - t5);
+
+    LOG("[切换] %d -> %d (总耗时 %lu ms)\n", m_prevTrayNumber, slot, t6 - t0);
 }
 
 void
@@ -253,28 +272,38 @@ SnapshotManager::Restore(int num)
         return;
     Snapshot& snap = m_snapshots[num];
 
-    // 临时禁用窗口最小化/还原动画，让批量恢复像瞬间切换而非逐个动画
-    ANIMATIONINFO ai = { sizeof(ANIMATIONINFO) };
-    BOOL origAnimate = FALSE;
-    if (SystemParametersInfo(SPI_GETANIMATION, sizeof(ai), &ai, 0))
-        origAnimate = ai.iMinAnimate;
-    if (origAnimate) {
-        ai.iMinAnimate = 0;
-        SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
-    }
+    DWORD t0 = GetTickCount();
 
     auto& wins = snap.windows;
 
-    // 将当前可见窗口中"不在目标快照里"的全部最小化
-    for (const auto& w : m_windows) {
-        auto it = std::find_if(
-                wins.begin(), wins.end(), [&](const WinInfo& sw) {
-                    return sw.hwnd == w.hwnd;
-                });
-        if (it == wins.end()) {
-            ShowWindow(w.hwnd, SW_MINIMIZE);
+    // 窗口 ≤ 3 时跳过动画禁用：SystemParametersInfo 是系统级广播，
+    // 对少量窗口来说广播开销比动画本身还大
+    const bool skipAnim = wins.size() <= 3;
+    ANIMATIONINFO ai = { sizeof(ANIMATIONINFO) };
+    BOOL origAnimate = FALSE;
+    if (!skipAnim) {
+        if (SystemParametersInfo(SPI_GETANIMATION, sizeof(ai), &ai, 0))
+            origAnimate = ai.iMinAnimate;
+        if (origAnimate) {
+            ai.iMinAnimate = 0;
+            SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
         }
     }
+    DWORD t1 = GetTickCount();
+    LOG("[计时]   动画禁用: %lu ms (skip=%d)\n", t1 - t0, skipAnim);
+
+    // 将当前可见窗口中"不在目标快照里"的全部最小化
+    // 用 unordered_set 替代 find_if 嵌套循环，O(N+M) 替代 O(N×M)
+    std::unordered_set<HWND> snapSet;
+    snapSet.reserve(wins.size());
+    for (const auto& sw : wins)
+        snapSet.insert(sw.hwnd);
+    for (const auto& w : m_windows) {
+        if (snapSet.find(w.hwnd) == snapSet.end())
+            ShowWindow(w.hwnd, SW_MINIMIZE);
+    }
+    DWORD t2 = GetTickCount();
+    LOG("[计时]   最小化无关窗口: %lu ms\n", t2 - t1);
 
 #ifndef RELEASE
     LOG("[快照] 从数字 %d 恢复 %d 个窗口\n", num, (int)wins.size());
@@ -302,6 +331,11 @@ SnapshotManager::Restore(int num)
     // 最小化→最大化跨进程窗口时，直接 SetWindowPlacement(SW_MAXIMIZE)
     // 可能渲染异常（只显示还原尺寸的左上角，其余透明），所以拆成两步
     // 先 SW_SHOWNOACTIVATE 还原，再 SW_SHOWMAXIMIZED 最大化
+    //
+    // 优化：先检测窗口是否已处于目标状态，命中则跳过 SetWindowPlacement。
+    // 两次切回同一槽位时大部分窗口都未变动，白调 SetWindowPlacement
+    // 是最大的单步开销（跨进程 SendMessage 阻塞等待目标窗口处理）
+    int placed = 0, skipped = 0;
     for (size_t i = 0; i < wins.size(); i++) {
         const auto& w = wins[i];
         if (!IsWindow(w.hwnd)) {
@@ -314,6 +348,22 @@ SnapshotManager::Restore(int num)
         EnsureRectVisible(r, ww, wh);
 
         BOOL iconic = IsIconic(w.hwnd);
+        BOOL zoomed = IsZoomed(w.hwnd);
+        UINT curCmd;
+        if (iconic)
+            curCmd = SW_MINIMIZE;
+        else if (zoomed)
+            curCmd = SW_MAXIMIZE;
+        else
+            curCmd = SW_SHOWNORMAL;
+
+        // 当前状态与目标一致 → 跳过
+        if (curCmd == w.showCmd) {
+            skipped++;
+            continue;
+        }
+        placed++;
+
         const char* showCmdStr = CmdToStr(w.showCmd);
         LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
             "%ldx%ld\n",
@@ -331,26 +381,32 @@ SnapshotManager::Restore(int num)
         WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
         wp.rcNormalPosition = r;
         if (w.showCmd != SW_MINIMIZE && iconic) {
+            // 两步还原：第一步只需现身 → ShowWindowAsync 非阻塞
+            // 第二步需要设位置 → SetWindowPlacement 同步
             LOG("[恢复] [%zu] 两步还原: SW_SHOWNOACTIVATE -> %s\n",
                 i,
                 showCmdStr);
-            wp.showCmd = SW_SHOWNOACTIVATE;
-            SetWindowPlacement(w.hwnd, &wp);
+            ShowWindowAsync(w.hwnd, SW_SHOWNOACTIVATE);
             wp.showCmd = w.showCmd;
             SetWindowPlacement(w.hwnd, &wp);
         } else if (w.showCmd == SW_MAXIMIZE && !iconic) {
             // 已在另一显示器最大化；先还原到目标位置再最大化，实现跨屏移动
             LOG("[恢复] [%zu] 跨屏最大化: SW_SHOWNOACTIVATE -> SW_MAXIMIZE\n",
                 i);
-            wp.showCmd = SW_SHOWNOACTIVATE;
-            SetWindowPlacement(w.hwnd, &wp);
+            ShowWindowAsync(w.hwnd, SW_SHOWNOACTIVATE);
             wp.showCmd = SW_MAXIMIZE;
             SetWindowPlacement(w.hwnd, &wp);
+        } else if (w.showCmd == SW_MINIMIZE) {
+            // 只需最小化，不关心位置 → ShowWindowAsync 非阻塞
+            ShowWindowAsync(w.hwnd, SW_MINIMIZE);
         } else {
             wp.showCmd = w.showCmd;
             SetWindowPlacement(w.hwnd, &wp);
         }
     }
+    LOG("[计时]   实际 SetWindowPlacement: %d 窗口, 跳过 %d\n", placed, skipped);
+    DWORD t3 = GetTickCount();
+    LOG("[计时]   恢复位置/状态 (%zu 窗口): %lu ms\n", wins.size(), t3 - t2);
 
     // 第二步：按 zOrder 恢复 Z 序
     // 排序后从 HWND_BOTTOM 开始逐个往上叠，恢复原始前后关系
@@ -384,12 +440,16 @@ SnapshotManager::Restore(int num)
                 EndDeferWindowPos(hdwp);
         }
     }
+    DWORD t4 = GetTickCount();
+    LOG("[计时]   恢复 Z 序: %lu ms\n", t4 - t3);
 
     // 恢复动画设置
     if (origAnimate) {
         ai.iMinAnimate = origAnimate;
         SystemParametersInfo(SPI_SETANIMATION, sizeof(ai), &ai, 0);
     }
+    DWORD t5 = GetTickCount();
+    LOG("[计时]   动画恢复: %lu ms\n", t5 - t4);
 
 #ifndef RELEASE
     LOG("[验证] 开始对比恢复结果与快照数据...\n");
@@ -450,9 +510,10 @@ SnapshotManager::Restore(int num)
         }
     }
     LOG("[验证] 完成\n");
+    LOG("[计时]   验证对比: %lu ms\n", GetTickCount() - t5);
 #endif
 
-    LOG("[恢复] 完成\n");
+    LOG("[恢复] 完成 (总耗时 %lu ms)\n", GetTickCount() - t0);
 }
 
 // ===================================================================
