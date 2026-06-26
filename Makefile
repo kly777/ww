@@ -17,10 +17,10 @@ $(BUILDDIR)/version.o: $(RES) version.h | $(BUILDDIR)
 	$(WINDRES) -c 65001 $< $@
 
 $(BUILDDIR)/ww_dev.exe: $(SRC) version.h | $(BUILDDIR)
-	$(CXX) -std=c++17 -static -o $@ $(SRC) $(LIBS)
+	$(CXX) -std=c++23 -static -o $@ $(SRC) $(LIBS)
 
 $(BUILDDIR)/ww.exe: $(SRC) $(BUILDDIR)/version.o version.h | $(BUILDDIR)
-	$(CXX) -std=c++17 $(CXXFLAGS) -mwindows -o $@ $(SRC) $(BUILDDIR)/version.o $(LIBS)
+	$(CXX) -std=c++23 $(CXXFLAGS) -mwindows -o $@ $(SRC) $(BUILDDIR)/version.o $(LIBS)
 
 test: $(BUILDDIR)/ww_dev.exe
 	cd test && uv run pytest -v
