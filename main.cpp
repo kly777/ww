@@ -51,26 +51,11 @@ static const int kNavMap[10][4] = {
     { 6, 3, 8, 7 }, // 9
 };
 
-#ifdef RELEASE
-#define LOG(fmt, ...) ((void)0)
-#else
-#define LOG(fmt, ...)                                                          \
-    do {                                                                       \
-        printf(fmt, ##__VA_ARGS__);                                            \
-        if (g_logFile) {                                                       \
-            fprintf(g_logFile, fmt, ##__VA_ARGS__);                            \
-            fflush(g_logFile);                                                 \
-        }                                                                      \
-        fflush(stdout);                                                        \
-    } while (0)
-#endif
-
 // ---- 全局 ----
 static SnapshotManager* g_snapMgr = nullptr;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 
 static HWND g_hWnd = NULL;
-static FILE* g_logFile = NULL; // 文件日志句柄，仅 #ifndef RELEASE 有效
 
 // ---- 工作区总览预览 ----
 static HWND g_previewWnd = NULL;
@@ -672,12 +657,7 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         nid.hWnd = hwnd;
         nid.uID = kIdTrayIcon;
         Shell_NotifyIconW(NIM_DELETE, &nid);
-#ifndef RELEASE
-        if (g_logFile) {
-            fclose(g_logFile);
-            g_logFile = NULL;
-        }
-#endif
+        LogCleanup();
         PostQuitMessage(0);
         return 0;
     }
@@ -779,42 +759,21 @@ MessageWindowCreate(HINSTANCE hInstance)
 int
 main()
 {
+    HINSTANCE hInst = GetModuleHandle(NULL);
+
+    SetProcessDPIAware();
+#ifndef RELEASE
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+    LogInit();
+
+
     // 单实例保护：命名互斥体跨进程可见，第二个实例检测到已存在直接退出
     HANDLE hMutex = CreateMutexW(NULL, FALSE, L"WW_SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         LOG("已有实例在运行，退出\n");
         return 0;
     }
-
-    SetProcessDPIAware();
-#ifndef RELEASE
-    SetConsoleOutputCP(CP_UTF8);
-#endif
-    HINSTANCE hInst = GetModuleHandle(NULL);
-
-#ifndef RELEASE
-    // 初始化文件日志：输出到 exe 同目录下的 ww.log
-    // 使用共享读写模式打开，允许外部（如测试脚本）同时读取日志
-    wchar_t logPath[MAX_PATH];
-    GetModuleFileNameW(NULL, logPath, MAX_PATH);
-    wchar_t* lastSlash = wcsrchr(logPath, L'\\');
-    if (lastSlash) {
-        *(lastSlash + 1) = L'\0';
-        wcscat_s(logPath, MAX_PATH, L"ww.log");
-        HANDLE hFile = CreateFileW(logPath,
-                                   FILE_APPEND_DATA,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                   NULL,
-                                   OPEN_ALWAYS,
-                                   FILE_ATTRIBUTE_NORMAL,
-                                   NULL);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            int fd = _open_osfhandle((intptr_t)hFile, 0);
-            if (fd != -1)
-                g_logFile = _fdopen(fd, "a");
-        }
-    }
-#endif
 
     VirtualDesktopManagerInit();
 
@@ -843,9 +802,6 @@ main()
     delete g_snapMgr;
     g_snapMgr = nullptr;
     VirtualDesktopManagerCleanup();
-#ifndef RELEASE
-    if (g_logFile)
-        fclose(g_logFile);
-#endif
+    LogCleanup();
     return 0;
 }

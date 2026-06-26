@@ -10,17 +10,6 @@
 #include <unordered_set>
 #include <shobjidl.h> // IVirtualDesktopManager 完整定义
 
-// ---- 日志宏 (snapshot_manager 独立版本，不依赖 g_logFile) ----
-#ifdef RELEASE
-#define LOG(fmt, ...) ((void)0)
-#else
-#define LOG(fmt, ...)                                                          \
-    do {                                                                       \
-        printf(fmt, ##__VA_ARGS__);                                            \
-        fflush(stdout);                                                        \
-    } while (0)
-#endif
-
 // ===================================================================
 // SnapshotManager
 // ===================================================================
@@ -332,10 +321,6 @@ SnapshotManager::Restore(int num)
     // 可能渲染异常（只显示还原尺寸的左上角，其余透明），所以拆成两步
     // 先 SW_SHOWNOACTIVATE 还原，再 SW_SHOWMAXIMIZED 最大化
     //
-    // 优化：先检测窗口是否已处于目标状态，命中则跳过 SetWindowPlacement。
-    // 两次切回同一槽位时大部分窗口都未变动，白调 SetWindowPlacement
-    // 是最大的单步开销（跨进程 SendMessage 阻塞等待目标窗口处理）
-    int placed = 0, skipped = 0;
     for (size_t i = 0; i < wins.size(); i++) {
         const auto& w = wins[i];
         if (!IsWindow(w.hwnd)) {
@@ -348,22 +333,6 @@ SnapshotManager::Restore(int num)
         EnsureRectVisible(r, ww, wh);
 
         BOOL iconic = IsIconic(w.hwnd);
-        BOOL zoomed = IsZoomed(w.hwnd);
-        UINT curCmd;
-        if (iconic)
-            curCmd = SW_MINIMIZE;
-        else if (zoomed)
-            curCmd = SW_MAXIMIZE;
-        else
-            curCmd = SW_SHOWNORMAL;
-
-        // 当前状态与目标一致 → 跳过
-        if (curCmd == w.showCmd) {
-            skipped++;
-            continue;
-        }
-        placed++;
-
         const char* showCmdStr = CmdToStr(w.showCmd);
         LOG("[恢复] [%zu] \"%s\" iconic=%d -> %s rect=(%ld,%ld,%ld,%ld) "
             "%ldx%ld\n",
@@ -401,7 +370,6 @@ SnapshotManager::Restore(int num)
             SetWindowPlacement(w.hwnd, &wp);
         }
     }
-    LOG("[计时]   实际 SetWindowPlacement: %d 窗口, 跳过 %d\n", placed, skipped);
     DWORD t3 = GetTickCount();
     LOG("[计时]   恢复位置/状态 (%zu 窗口): %lu ms\n", wins.size(), t3 - t2);
 

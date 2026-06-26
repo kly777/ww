@@ -12,6 +12,8 @@ struct IVirtualDesktopManager;
 #include <string>
 #include <vector>
 
+#include "log.h"
+
 constexpr int kMaxWindows = 256;
 
 // ---- 快照数据 ----
