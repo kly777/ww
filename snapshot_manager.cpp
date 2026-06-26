@@ -5,9 +5,9 @@
 
 #include "snapshot_manager.h"
 
-#include <shobjidl.h> // IVirtualDesktopManager 完整定义
 #include <algorithm>
 #include <cstdio>
+#include <shobjidl.h> // IVirtualDesktopManager 完整定义
 
 // ---- 日志宏 (snapshot_manager 独立版本，不依赖 g_logFile) ----
 #ifdef RELEASE
@@ -26,8 +26,8 @@
 
 SnapshotManager::SnapshotManager(TrayUpdater onTrayUpdate,
                                  IVirtualDesktopManager* pDesktopMgr)
-    : m_onTrayUpdate(std::move(onTrayUpdate))
-    , m_pDesktopMgr(pDesktopMgr)
+  : m_onTrayUpdate(std::move(onTrayUpdate))
+  , m_pDesktopMgr(pDesktopMgr)
 {
 }
 
@@ -145,8 +145,7 @@ SnapshotManager::FillWindowInfo(WinInfo& w, HWND hwnd)
     int len = WideCharToMultiByte(CP_UTF8, 0, wt, -1, NULL, 0, NULL, NULL);
     if (len > 0) {
         w.title.resize(len - 1);
-        WideCharToMultiByte(
-                CP_UTF8, 0, wt, -1, &w.title[0], len, NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, wt, -1, &w.title[0], len, NULL, NULL);
     }
 
     BOOL iconic = IsIconic(hwnd);

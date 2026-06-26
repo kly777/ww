@@ -10,13 +10,8 @@
 #include <shobjidl.h>
 #include <stdio.h>
 #include <windows.h>
-
-#include <algorithm>
-#include <array>
 #include <cstdio>
-#include <map>
-#include <string>
-#include <vector>
+
 
 #include "snapshot_manager.h"
 
@@ -429,7 +424,8 @@ PreviewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int row = my * 3 / (rc.bottom - rc.top);
         if (col >= 0 && col < 3 && row >= 0 && row < 3) {
             int slot = row * 3 + col + 1;
-            if (g_snapMgr) g_snapMgr->SwitchTo(slot);
+            if (g_snapMgr)
+                g_snapMgr->SwitchTo(slot);
         }
         DestroyWindow(hwnd);
         return 0;
@@ -511,7 +507,8 @@ OverviewBuild()
     for (int slot = 1; slot <= 9; slot++) {
         int col = (slot - 1) % kCols, row = (slot - 1) / kCols;
         int ox = col * cellW, oy = row * cellH;
-        const Snapshot& snap = g_snapMgr ? g_snapMgr->GetSnapshot(slot) : Snapshot{};
+        const Snapshot& snap
+                = g_snapMgr ? g_snapMgr->GetSnapshot(slot) : Snapshot{};
 
         RECT rcCell = { ox, oy, ox + cellW, oy + cellH };
         if (snap.screenBmp) {
@@ -640,7 +637,8 @@ OverviewShow(POINT mousePt)
 static void
 CaptureAndShow()
 {
-    if (!g_snapMgr) return;
+    if (!g_snapMgr)
+        return;
     // 先销毁旧窗口，再截取当前快照确保总览是最新状态
     if (g_previewWnd && IsWindow(g_previewWnd))
         DestroyWindow(g_previewWnd);
@@ -662,7 +660,8 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_INIT_TRAY: {
-        if (g_snapMgr) g_snapMgr->Initialize();
+        if (g_snapMgr)
+            g_snapMgr->Initialize();
         return 0;
     }
 
@@ -684,7 +683,8 @@ WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_HOTKEY: {
-        if (!g_snapMgr) return 0;
+        if (!g_snapMgr)
+            return 0;
         int id = (int)wParam;
         if (id == static_cast<int>(HotkeyId::Screenshot)) {
             CaptureAndShow();
@@ -819,9 +819,8 @@ main()
     VirtualDesktopManagerInit();
 
     // 创建快照管理器 — 注入托盘更新回调和虚拟桌面管理器
-    g_snapMgr = new SnapshotManager(
-            [](int num) { TrayIconUpdate(num); },
-            g_pDesktopManager);
+    g_snapMgr = new SnapshotManager([](int num) { TrayIconUpdate(num); },
+                                    g_pDesktopManager);
 
     if (!MessageWindowCreate(hInst)) {
         LOG("创建消息窗口失败\n");
