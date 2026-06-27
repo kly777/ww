@@ -616,8 +616,8 @@ SnapshotManager::CaptureSlot(int slot)
     int uh = workUnion.bottom - workUnion.top;
     if (uw <= 0 || uh <= 0)
         return;
-    snap.screenW = uw / 4;
-    snap.screenH = uh / 4;
+    snap.screenW = uw / 8;
+    snap.screenH = uh / 8;
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
     snap.screenBmp
