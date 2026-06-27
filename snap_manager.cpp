@@ -3,7 +3,7 @@
 #define _WIN32_WINNT 0x0A00
 #define NTDDI_VERSION 0x0A000007
 
-#include "snapshot_manager.h"
+#include "snap_manager.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -11,17 +11,17 @@
 #include <shobjidl.h> // IVirtualDesktopManager 完整定义
 
 // ===================================================================
-// SnapshotManager
+// SnapManager
 // ===================================================================
 
-SnapshotManager::SnapshotManager(TrayUpdater onTrayUpdate,
+SnapManager::SnapManager(TrayUpdater onTrayUpdate,
                                  IVirtualDesktopManager* pDesktopMgr)
   : m_onTrayUpdate(std::move(onTrayUpdate))
   , m_pDesktopMgr(pDesktopMgr)
 {
 }
 
-SnapshotManager::~SnapshotManager()
+SnapManager::~SnapManager()
 {
     for (auto& snap : m_snapshots) {
         if (snap.screenBmp) {
@@ -32,7 +32,7 @@ SnapshotManager::~SnapshotManager()
 }
 
 void
-SnapshotManager::Initialize()
+SnapManager::Initialize()
 {
     EnumerateWindows();
     LOG("共 %d 个窗口\n", (int)m_windows.size());
@@ -42,7 +42,7 @@ SnapshotManager::Initialize()
 // ---- 核心操作: 切换槽位 ----
 
 void
-SnapshotManager::SwitchTo(int slot)
+SnapManager::SwitchTo(int slot)
 {
     if (slot < 0 || slot > 9)
         return;
@@ -82,7 +82,7 @@ SnapshotManager::SwitchTo(int slot)
 }
 
 void
-SnapshotManager::CaptureCurrent()
+SnapManager::CaptureCurrent()
 {
     CaptureSlot(m_trayNumber);
 }
@@ -92,7 +92,7 @@ SnapshotManager::CaptureCurrent()
 // ===================================================================
 
 void
-SnapshotManager::EnumerateWindows()
+SnapManager::EnumerateWindows()
 {
     m_windows.clear();
     m_zOrderCounter = 0;
@@ -100,14 +100,14 @@ SnapshotManager::EnumerateWindows()
 }
 
 BOOL CALLBACK
-SnapshotManager::EnumCallback(HWND hwnd, LPARAM lParam)
+SnapManager::EnumCallback(HWND hwnd, LPARAM lParam)
 {
-    auto* self = (SnapshotManager*)lParam;
+    auto* self = (SnapManager*)lParam;
     return self->OnEnumWindow(hwnd);
 }
 
 BOOL
-SnapshotManager::OnEnumWindow(HWND hwnd)
+SnapManager::OnEnumWindow(HWND hwnd)
 {
     if (ShouldSkip(hwnd))
         return TRUE;
@@ -120,7 +120,7 @@ SnapshotManager::OnEnumWindow(HWND hwnd)
 }
 
 BOOL
-SnapshotManager::ShouldSkip(HWND hwnd)
+SnapManager::ShouldSkip(HWND hwnd)
 {
     if (!IsWindowVisible(hwnd))
         return TRUE;
@@ -143,7 +143,7 @@ SnapshotManager::ShouldSkip(HWND hwnd)
 }
 
 void
-SnapshotManager::FillWindowInfo(WinInfo& w, HWND hwnd)
+SnapManager::FillWindowInfo(WinInfo& w, HWND hwnd)
 {
     w.hwnd = hwnd;
     w.zOrder = m_zOrderCounter++;
@@ -189,7 +189,7 @@ SnapshotManager::FillWindowInfo(WinInfo& w, HWND hwnd)
 // ===================================================================
 
 void
-SnapshotManager::SaveCurrent()
+SnapManager::SaveCurrent()
 {
     int num = m_trayNumber;
     Snapshot& snap = m_snapshots[num];
@@ -255,7 +255,7 @@ EnsureRectVisible(RECT& rect, int width, int height)
 }
 
 void
-SnapshotManager::Restore(int num)
+SnapManager::Restore(int num)
 {
     if (num < 0 || num > 9)
         return;
@@ -489,7 +489,7 @@ SnapshotManager::Restore(int num)
 // 故 m_windows 中每个窗口都有合法桌面 GUID，比 GetForegroundWindow 可靠
 
 void
-SnapshotManager::SyncDesktopState()
+SnapManager::SyncDesktopState()
 {
     GUID newId = GUID_NULL;
     if (m_pDesktopMgr && !m_windows.empty())
@@ -605,7 +605,7 @@ WorkAreaUnionGet()
 }
 
 void
-SnapshotManager::CaptureSlot(int slot)
+SnapManager::CaptureSlot(int slot)
 {
     Snapshot& snap = m_snapshots[slot];
     if (snap.screenBmp)

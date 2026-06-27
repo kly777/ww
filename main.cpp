@@ -13,7 +13,7 @@
 #include <cstdio>
 
 
-#include "snapshot_manager.h"
+#include "snap_manager.h"
 
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 // WM_INIT_TRAY: 延迟初始化托盘 必须在 GetMessage 循环跑起来之后才能
@@ -52,7 +52,7 @@ static const int kNavMap[10][4] = {
 };
 
 // ---- 全局 ----
-static SnapshotManager* g_snapMgr = nullptr;
+static SnapManager* g_snapMgr = nullptr;
 static IVirtualDesktopManager* g_pDesktopManager = NULL;
 
 static HWND g_hWnd = NULL;
@@ -88,9 +88,7 @@ VirtualDesktopManagerCleanup()
     CoUninitialize();
 }
 
-// ---- 快照操作已迁移至 SnapshotManager (snapshot_manager.cpp) ----
-// (SnapRestore, CmdToStr, DesktopStateSync, CapCtx, CapMonitorProc,
-//  CapDrawProc, WorkAreaUnionGet, SnapCapture, SnapSwitch)
+// ---- 快照操作已迁移至 SnapManager (snap_manager.cpp) ----
 
 // ---- 生成托盘图标 ----
 HICON
@@ -778,7 +776,7 @@ main()
     VirtualDesktopManagerInit();
 
     // 创建快照管理器 — 注入托盘更新回调和虚拟桌面管理器
-    g_snapMgr = new SnapshotManager([](int num) { TrayIconUpdate(num); },
+    g_snapMgr = new SnapManager([](int num) { TrayIconUpdate(num); },
                                     g_pDesktopManager);
 
     if (!MessageWindowCreate(hInst)) {

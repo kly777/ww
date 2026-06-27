@@ -49,23 +49,23 @@ struct DesktopState {
 };
 
 // ---- 工具函数 ----
-// 由 snapshot_manager.cpp 实现，供 main.cpp 的 OverviewBuild 使用
+// 由 snap_manager.cpp 实现，供 main.cpp 的 OverviewBuild 使用
 RECT WorkAreaUnionGet();
 
-// ---- SnapshotManager ----
+// ---- SnapManager ----
 
-class SnapshotManager {
+class SnapManager {
 public:
     // 托盘图标更新回调: 传入新的槽位号
     using TrayUpdater = std::function<void(int)>;
 
-    SnapshotManager(TrayUpdater onTrayUpdate,
+    SnapManager(TrayUpdater onTrayUpdate,
                     IVirtualDesktopManager* pDesktopMgr = nullptr);
-    ~SnapshotManager();
+    ~SnapManager();
 
     // 禁止拷贝
-    SnapshotManager(const SnapshotManager&) = delete;
-    SnapshotManager& operator=(const SnapshotManager&) = delete;
+    SnapManager(const SnapManager&) = delete;
+    SnapManager& operator=(const SnapManager&) = delete;
 
     // ---- 对外接口 ----
     void Initialize();  // 首次枚举窗口 + 通知托盘
